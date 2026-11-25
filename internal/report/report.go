@@ -126,8 +126,8 @@ func htmlTemplate() *template.Template {
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
 <div class="card">Parse warnings<strong>{{.WarningCount}}</strong></div>
 </section>
-<section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
 <section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
+<section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
 <div class="split">
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
 <section id="recipients" class="panel"><h2>Top recipients</h2><div id="recipientTable"></div></section>
