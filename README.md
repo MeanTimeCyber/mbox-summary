@@ -3,7 +3,7 @@
 `mbox-summary` parses an RFC 5322 mbox export and creates a standalone HTML report containing weekly email volume for the latest 104 ISO weeks, yearly volume for older mail, top sender rankings, and top recipient rankings.
 
 > [!CAUTION]
-> Built entirely using GitHub Copilot. As sensibly as possible, of course, but it's still clanker-built.
+> Built entirely using GitHub Copilot. As sensibly as possible, of course, but it's still made by clankers.
 
 ## Requirements
 
