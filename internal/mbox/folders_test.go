@@ -4,7 +4,9 @@ package mbox_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/meantimecyber/mbox-summary/internal/mbox"
 )
@@ -177,5 +179,36 @@ func TestDedupeIndexMessageIDAndFallback(t *testing.T) {
 	if index.MessageIDKeys != 1 || index.FallbackKeys != 1 {
 		t.Errorf("dedupe key totals = Message-ID %d, fallback %d; want 1, 1",
 			index.MessageIDKeys, index.FallbackKeys)
+	}
+}
+
+// TestExportAttachmentsCreatesSafeGeneratedNames verifies attachment export naming and counts.
+func TestExportAttachmentsCreatesSafeGeneratedNames(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "attachments")
+	message := mbox.Message{
+		DateValid: true,
+		Date:      time.Date(2025, 11, 24, 10, 0, 0, 0, time.UTC),
+		MessageID: "<sender@EXAMPLE.com>",
+		Attachments: []mbox.Attachment{
+			{Name: "../report.pdf", ContentType: "application/pdf", Size: 5, Data: []byte("hello")},
+		},
+	}
+
+	count, size, err := mbox.ExportAttachments(directory, message)
+	if err != nil {
+		t.Fatalf("ExportAttachments() error = %v", err)
+	}
+	if count != 1 || size != 5 {
+		t.Errorf("export count/size = %d/%d, want 1/5", count, size)
+	}
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("exported files = %d, want 1", len(files))
+	}
+	if !strings.Contains(files[0].Name(), "20251124-sender@exam") {
+		t.Errorf("generated filename = %q, want date and truncated Message-ID", files[0].Name())
 	}
 }

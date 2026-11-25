@@ -173,3 +173,40 @@ func TestSummarizeBuildsTopConversationThreads(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeSentAttachmentTypes verifies only sent mail contributes to attachment totals.
+func TestSummarizeSentAttachmentTypes(t *testing.T) {
+	cutoff := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	messages := []mbox.Message{
+		{
+			Date:        cutoff,
+			From:        mbox.Address{Address: "owner@example.com"},
+			Attachments: []mbox.Attachment{{Name: "report.pdf", Size: 100}},
+		},
+		{
+			Date:        cutoff,
+			From:        mbox.Address{Address: "friend@example.net"},
+			Attachments: []mbox.Attachment{{Name: "photo.jpg", Size: 500}},
+		},
+		{
+			Date:        cutoff,
+			From:        mbox.Address{Address: "owner@example.com"},
+			Attachments: []mbox.Attachment{{Name: "notes.txt", Size: 50}},
+		},
+	}
+
+	summary := stats.Summarize(messages, []string{"owner@example.com"}, cutoff, 50)
+	if len(summary.Attachments.TopSentTypes) != 2 {
+		t.Fatalf("sent attachment type count = %d, want 2", len(summary.Attachments.TopSentTypes))
+	}
+	total := int64(0)
+	for _, typeStats := range summary.Attachments.TopSentTypes {
+		total += typeStats.SizeBytes
+		if typeStats.FileType == "jpg" {
+			t.Error("received attachment photo.jpg appeared in sent-only totals")
+		}
+	}
+	if total != 150 {
+		t.Errorf("sent attachment total = %d, want 150", total)
+	}
+}

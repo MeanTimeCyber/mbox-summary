@@ -28,6 +28,7 @@ type pageData struct {
 	DedupeJSON      template.JS
 	FolderStatsJSON template.JS
 	ThreadsJSON     template.JS
+	AttachmentsJSON template.JS
 }
 
 // WriteFile writes a complete, self-contained HTML report to outputPath.
@@ -48,6 +49,7 @@ func WriteFile(outputPath string, summary model.Summary) error {
 		DedupeJSON:      mustJSON(summary.Dedupe),
 		FolderStatsJSON: mustJSON(summary.FolderStats),
 		ThreadsJSON:     mustJSON(summary.TopThreads),
+		AttachmentsJSON: mustJSON(summary.Attachments),
 	}
 
 	directory := filepath.Dir(outputPath)
@@ -126,7 +128,7 @@ func htmlTemplate() *template.Template {
 <body><main>
 <h1>{{.Title}}</h1>
 <p>Cutoff: {{.Cutoff}} · Generated: {{.GeneratedAt}}</p>
-<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#threads">Threads</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
+<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#threads">Threads</a> · <a href="#attachments">Attachments</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
 <section class="cards">
 <div class="card">Messages<strong>{{.MessageCount}}</strong></div>
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
@@ -135,6 +137,7 @@ func htmlTemplate() *template.Template {
 <section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
 <section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
 <section id="threads" class="panel"><h2>Top 20 conversation threads</h2><div id="threadTable"></div></section>
+<section id="attachments" class="panel"><h2>Sent attachments</h2><div id="attachmentTable"></div></section>
 <section id="sources" class="panel"><h2>Source folders and files</h2><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></section>
 <div class="split">
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
@@ -152,6 +155,7 @@ const sources={{.SourcesJSON}};
 const dedupe={{.DedupeJSON}};
 const folderStats={{.FolderStatsJSON}};
 const threads={{.ThreadsJSON}};
+const attachments={{.AttachmentsJSON}};
 // drawChart renders a dependency-free SVG chart for all browsers and print output.
 function drawChart(container, rows, labelKey) {
  if(!rows.length){container.textContent='No data.';return}
@@ -226,6 +230,19 @@ function threadTable(rows){
  });
  return html+'</tbody></table></div>';
 }
+function formatBytes(bytes){
+ if(bytes<1024)return bytes+' B';
+ if(bytes<1024*1024)return (bytes/1024).toFixed(1)+' KiB';
+ if(bytes<1024*1024*1024)return (bytes/(1024*1024)).toFixed(1)+' MiB';
+ return (bytes/(1024*1024*1024)).toFixed(1)+' GiB';
+}
+function attachmentTable(stats){
+ let html='<p><strong>Exported files:</strong> '+stats.ExportedFiles+' · <strong>Exported size:</strong> '+formatBytes(stats.ExportedBytes||0)+'</p>';
+ if(!stats.TopSentTypes||!stats.TopSentTypes.length)return html+'<p>No sent attachments found.</p>';
+ html+='<div class="table-wrap"><table><thead><tr><th>Rank</th><th>File type</th><th>Attachments</th><th>Total size</th></tr></thead><tbody>';
+ stats.TopSentTypes.forEach((row,index)=>html+='<tr><td>'+ (index+1)+'</td><td><code>'+escapeText(row.FileType)+'</code></td><td>'+row.Count+'</td><td>'+formatBytes(row.SizeBytes||0)+'</td></tr>');
+ return html+'</tbody></table></div>';
+}
 function escapeText(value){const el=document.createElement('span');el.textContent=value==null?'':String(value);return el.innerHTML}
 document.getElementById('weeklyTable').innerHTML=periodTable(weekly);
 document.getElementById('yearlyTable').innerHTML=periodTable(yearly);
@@ -235,6 +252,7 @@ document.getElementById('sourceTable').innerHTML=sourceTable(sources);
 document.getElementById('folderTable').innerHTML=folderTable(folderStats);
 document.getElementById('dedupeStats').innerHTML='<p><strong>Unique messages:</strong> '+dedupe.UniqueMessages+' · <strong>Duplicate records:</strong> '+dedupe.DuplicateRecords+' · <strong>Message-ID keys:</strong> '+dedupe.MessageIDKeys+' · <strong>Fallback keys:</strong> '+dedupe.FallbackKeys+'</p>';
 document.getElementById('threadTable').innerHTML=threadTable(threads);
+document.getElementById('attachmentTable').innerHTML=attachmentTable(attachments);
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');

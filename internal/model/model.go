@@ -59,6 +59,20 @@ type FolderStats struct {
 	Messages int
 }
 
+// AttachmentTypeStats describes sent attachment totals for one file type.
+type AttachmentTypeStats struct {
+	FileType  string
+	Count     int
+	SizeBytes int64
+}
+
+// AttachmentStats summarizes attachment export and sent file-type totals.
+type AttachmentStats struct {
+	ExportedFiles int
+	ExportedBytes int64
+	TopSentTypes  []AttachmentTypeStats
+}
+
 // ThreadParticipant identifies one non-owner address in a conversation thread.
 type ThreadParticipant struct {
 	Address string
@@ -93,4 +107,5 @@ type Summary struct {
 	Dedupe          DedupeStats
 	FolderStats     []FolderStats
 	TopThreads      []ConversationThread
+	Attachments     AttachmentStats
 }

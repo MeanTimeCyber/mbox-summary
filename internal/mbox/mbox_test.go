@@ -146,6 +146,39 @@ func TestParseExtractsThreadHeaders(t *testing.T) {
 	}
 }
 
+// TestParseExtractsBase64Attachment verifies MIME multipart attachment decoding.
+func TestParseExtractsBase64Attachment(t *testing.T) {
+	input := "From owner@example.com Mon Nov 24 10:00:00 2025\n" +
+		"Message-ID: <attachment@example.com>\n" +
+		"From: Owner <owner@example.com>\n" +
+		"Date: Mon, 24 Nov 2025 10:00:00 +0000\n" +
+		"MIME-Version: 1.0\n" +
+		"Content-Type: multipart/mixed; boundary=boundary1\n\n" +
+		"--boundary1\nContent-Type: text/plain\n\nBody\n" +
+		"--boundary1\nContent-Type: application/pdf\n" +
+		"Content-Disposition: attachment; filename=\"report.pdf\"\n" +
+		"Content-Transfer-Encoding: base64\n\n" +
+		"aGVsbG8=\n--boundary1--\n"
+
+	result, err := mbox.ParseWithOptions(strings.NewReader(input), mbox.ParseOptions{ExtractAttachments: true})
+	if err != nil {
+		t.Fatalf("ParseWithOptions() error = %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(result.Messages))
+	}
+	attachments := result.Messages[0].Attachments
+	if len(attachments) != 1 {
+		t.Fatalf("attachment count = %d, want 1", len(attachments))
+	}
+	if attachments[0].Name != "report.pdf" {
+		t.Errorf("attachment name = %q, want report.pdf", attachments[0].Name)
+	}
+	if string(attachments[0].Data) != "hello" {
+		t.Errorf("attachment data = %q, want hello", string(attachments[0].Data))
+	}
+}
+
 // TestParseWithOptionsWorkers verifies that bounded parallel header parsing preserves results.
 func TestParseWithOptionsWorkers(t *testing.T) {
 	input := "From owner@example.com Mon Nov 24 10:00:00 2025\n" +

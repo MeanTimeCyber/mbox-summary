@@ -81,6 +81,7 @@ func run(args []string) error {
 	timeout := fs.Duration("timeout", 0, "maximum parsing time; 0 disables the timeout")
 	showProgress := fs.Bool("progress", true, "show parsing progress")
 	workers := fs.Int("workers", min(runtime.GOMAXPROCS(0), 4), "number of header-parsing workers")
+	attachmentsDir := fs.String("attachments-dir", "", "optional folder where unique message attachments are exported")
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
@@ -242,6 +243,8 @@ func run(args []string) error {
 
 	allSecondWarnings := make([]model.ParseWarning, 0)
 	byteOffset = 0
+	exportedFiles := 0
+	exportedBytes := int64(0)
 	for sourceIndex, source := range sources {
 		secondPassFile, err := os.Open(source.Path)
 		if err != nil {
@@ -252,6 +255,7 @@ func run(args []string) error {
 		secondOptions.DiscardMessages = true
 		secondOptions.SourceFolder = source.Folder
 		secondOptions.SourceFile = source.Path
+		secondOptions.ExtractAttachments = true
 		duplicatesBefore := dedupe.DuplicateRecords
 		var dedupeErr error
 		secondOptions.MessageHandler = func(message mbox.Message) {
@@ -262,6 +266,15 @@ func run(args []string) error {
 			}
 			if err == nil && unique {
 				accumulator.Observe(message)
+				if *attachmentsDir != "" {
+					count, bytes, exportErr := mbox.ExportAttachments(*attachmentsDir, message)
+					if exportErr != nil {
+						dedupeErr = exportErr
+						return
+					}
+					exportedFiles += count
+					exportedBytes += bytes
+				}
 			}
 		}
 		secondResult, err := mbox.ParseWithOptions(secondPassFile, secondOptions)
@@ -299,6 +312,8 @@ func run(args []string) error {
 		MessageIDKeys:    dedupe.MessageIDKeys,
 		FallbackKeys:     dedupe.FallbackKeys,
 	}
+	summary.Attachments.ExportedFiles = exportedFiles
+	summary.Attachments.ExportedBytes = exportedBytes
 
 	if err := report.WriteFile(*output, summary); err != nil {
 		return fmt.Errorf("write HTML report: %w", err)

@@ -5,9 +5,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -35,6 +40,15 @@ type Message struct {
 	SentFolder    bool
 	Folder        FolderRole
 	SourceFile    string
+	Attachments   []Attachment
+}
+
+// Attachment describes one decoded MIME attachment and its reported payload size.
+type Attachment struct {
+	Name        string
+	ContentType string
+	Size        int64
+	Data        []byte
 }
 
 // Address contains a normalized email address and display name.
@@ -61,16 +75,17 @@ type ParseProgress struct {
 
 // ParseOptions configures cancellation and progress reporting for a mailbox parse.
 type ParseOptions struct {
-	Context         context.Context
-	Progress        func(ParseProgress)
-	TotalBytes      int64
-	DiscardMessages bool
-	MessageHandler  func(Message)
-	Workers         int
-	MaxHeaderBytes  int64
-	ByteOffset      int64
-	SourceFolder    FolderRole
-	SourceFile      string
+	Context            context.Context
+	Progress           func(ParseProgress)
+	TotalBytes         int64
+	DiscardMessages    bool
+	MessageHandler     func(Message)
+	Workers            int
+	MaxHeaderBytes     int64
+	ByteOffset         int64
+	SourceFolder       FolderRole
+	SourceFile         string
+	ExtractAttachments bool
 }
 
 // countingReader records bytes consumed while emersion/go-mbox streams a mailbox.
@@ -90,6 +105,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 type headerJob struct {
 	Index  int
 	Header []byte
+	Full   []byte
 }
 
 // headerResult contains the parsed metadata or an extraction error for one record.
@@ -234,7 +250,13 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 		go func() {
 			defer workerGroup.Done()
 			for job := range jobs {
-				message, err := parseRecord(bytes.NewReader(job.Header))
+				var message Message
+				var err error
+				if job.Full != nil {
+					message, err = parseRecordWithAttachments(bytes.NewReader(job.Full))
+				} else {
+					message, err = parseRecord(bytes.NewReader(job.Header))
+				}
 				select {
 				case results <- headerResult{Index: job.Index, Message: message, Err: err}:
 				case <-ctx.Done():
@@ -311,9 +333,21 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 			reportProgress(options, counted.bytesRead, index, parsedCount, len(result.Warnings))
 			break
 		}
-		header, headerErr := extractHeaders(record, maxHeaderBytes)
+		var job headerJob
+		var headerErr error
+		if options.ExtractAttachments {
+			full, err := io.ReadAll(record)
+			if err != nil {
+				headerErr = err
+			} else {
+				job = headerJob{Index: index, Full: full}
+			}
+		} else {
+			header, err := extractHeaders(record, maxHeaderBytes)
+			headerErr = err
+			job = headerJob{Index: index, Header: header}
+		}
 		if headerErr == nil {
-			job := headerJob{Index: index, Header: header}
 			select {
 			case jobs <- job:
 			case <-ctx.Done():
@@ -385,6 +419,107 @@ func parseRecord(r io.Reader) (Message, error) {
 
 	message.SentFolder = hasSentFolderHeader(parsed.Header)
 	return message, nil
+}
+
+// parseRecordWithAttachments parses metadata and decodes attachment payloads.
+func parseRecordWithAttachments(r io.Reader) (Message, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return Message{}, err
+	}
+	message, err := parseRecord(bytes.NewReader(raw))
+	if err != nil {
+		return Message{}, err
+	}
+	parsed, err := mail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return Message{}, err
+	}
+	message.Attachments, err = extractAttachments(parsed)
+	if err != nil {
+		return Message{}, err
+	}
+	return message, nil
+}
+
+// extractAttachments walks multipart MIME parts and decodes attachment payloads.
+func extractAttachments(message *mail.Message) ([]Attachment, error) {
+	contentType := message.Header.Get("Content-Type")
+	if contentType == "" {
+		return nil, nil
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, nil
+	}
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		return nil, nil
+	}
+	reader := multipart.NewReader(message.Body, params["boundary"])
+	return extractMultipartAttachments(reader)
+}
+
+// extractMultipartAttachments recursively scans nested MIME multipart payloads.
+func extractMultipartAttachments(reader *multipart.Reader) ([]Attachment, error) {
+	result := make([]Attachment, 0)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return result, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		contentType := part.Header.Get("Content-Type")
+		mediaType, params, parseErr := mime.ParseMediaType(contentType)
+		if parseErr == nil && strings.HasPrefix(mediaType, "multipart/") {
+			nested, nestedErr := extractMultipartAttachments(multipart.NewReader(part, params["boundary"]))
+			if nestedErr != nil {
+				return nil, nestedErr
+			}
+			result = append(result, nested...)
+			continue
+		}
+
+		disposition, dispositionParams, dispositionErr := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+		filename := ""
+		if dispositionErr == nil {
+			filename = dispositionParams["filename"]
+			if filename == "" {
+				filename = params["name"]
+			}
+		} else {
+			filename = params["name"]
+		}
+		isAttachment := filename != "" || strings.EqualFold(disposition, "attachment")
+		if !isAttachment {
+			continue
+		}
+
+		decoded := decodeTransfer(part, part.Header.Get("Content-Transfer-Encoding"))
+		data, readErr := io.ReadAll(decoded)
+		if readErr != nil {
+			return nil, readErr
+		}
+		result = append(result, Attachment{
+			Name:        filepath.Base(filename),
+			ContentType: mediaType,
+			Size:        int64(len(data)),
+			Data:        data,
+		})
+	}
+}
+
+// decodeTransfer returns the appropriate transfer-decoding reader for a MIME part.
+func decodeTransfer(reader io.Reader, encoding string) io.Reader {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		return base64.NewDecoder(base64.StdEncoding, reader)
+	case "quoted-printable":
+		return quotedprintable.NewReader(reader)
+	default:
+		return reader
+	}
 }
 
 // firstAddress parses the first normalized address from an RFC 5322 address header.

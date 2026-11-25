@@ -3,6 +3,7 @@ package stats
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ type Accumulator struct {
 	threadNodes     map[string]*threadNode
 	threadRefs      map[string]string
 	threadSubjects  map[string]string
+	attachmentTypes map[string]*model.AttachmentTypeStats
+	exportedFiles   int
+	exportedBytes   int64
 }
 
 // threadNode is a union-find node for one in-window conversation root.
@@ -71,6 +75,7 @@ func NewAccumulator(identities []string, cutoff time.Time, top int) *Accumulator
 		threadNodes:     make(map[string]*threadNode),
 		threadRefs:      make(map[string]string),
 		threadSubjects:  make(map[string]string),
+		attachmentTypes: make(map[string]*model.AttachmentTypeStats),
 	}
 }
 
@@ -86,6 +91,24 @@ func (a *Accumulator) Observe(message mbox.Message) {
 		return
 	}
 	sent := a.owners[message.From.Address] || message.Folder == mbox.FolderSent || message.SentFolder
+	if sent {
+		for _, attachment := range message.Attachments {
+			fileType := strings.ToLower(strings.TrimPrefix(filepath.Ext(attachment.Name), "."))
+			if fileType == "" {
+				fileType = strings.Split(strings.ToLower(attachment.ContentType), ";")[0]
+				if fileType == "" {
+					fileType = "unknown"
+				}
+			}
+			entry := a.attachmentTypes[fileType]
+			if entry == nil {
+				entry = &model.AttachmentTypeStats{FileType: fileType}
+				a.attachmentTypes[fileType] = entry
+			}
+			entry.Count++
+			entry.SizeBytes += attachment.Size
+		}
+	}
 	receivedAddresses := uniqueAddresses(message.To, message.Cc, message.Bcc)
 	received := false
 	for _, address := range receivedAddresses {
@@ -374,6 +397,24 @@ func (a *Accumulator) Summary() model.Summary {
 		summary.FolderStats = append(summary.FolderStats, *a.folderStats[folderName])
 	}
 	summary.TopThreads = a.buildTopThreads(20)
+	attachmentTypes := make([]model.AttachmentTypeStats, 0, len(a.attachmentTypes))
+	for _, entry := range a.attachmentTypes {
+		attachmentTypes = append(attachmentTypes, *entry)
+	}
+	sort.Slice(attachmentTypes, func(i, j int) bool {
+		if attachmentTypes[i].SizeBytes != attachmentTypes[j].SizeBytes {
+			return attachmentTypes[i].SizeBytes > attachmentTypes[j].SizeBytes
+		}
+		return attachmentTypes[i].FileType < attachmentTypes[j].FileType
+	})
+	if len(attachmentTypes) > 10 {
+		attachmentTypes = attachmentTypes[:10]
+	}
+	summary.Attachments = model.AttachmentStats{
+		ExportedFiles: a.exportedFiles,
+		ExportedBytes: a.exportedBytes,
+		TopSentTypes:  attachmentTypes,
+	}
 	return summary
 }
 
