@@ -1,0 +1,59 @@
+# mbox-summary
+
+`mbox-summary` parses an RFC 5322 mbox export and creates a standalone HTML report containing weekly email volume for the latest 104 ISO weeks, yearly volume for older mail, top sender rankings, and top recipient rankings.
+
+## Requirements
+
+- Go 1.22 or newer
+- An mbox file with Unix-style `From ` separator lines
+
+## Build
+
+```bash
+go mod tidy
+go build -o mbox-summary ./cmd/mbox-summary
+```
+
+## Usage
+
+```bash
+./mbox-summary --input mailbox.mbox --output summary.html
+```
+
+If the mailbox owner cannot be inferred reliably, the command reports likely addresses and requires `--identity`:
+
+```bash
+./mbox-summary \
+  --input mailbox.mbox \
+  --output summary.html \
+  --identity owner@example.com \
+  --identity owner@company.example \
+  --top 50
+```
+
+Available flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--input` | Required | Input mbox path |
+| `--output` | `summary.html` | Output HTML path |
+| `--identity` | Inferred | Personal address; repeat to add addresses |
+| `--top` | `50` | Number of sender and recipient ranking entries |
+| `--as-of` | Latest valid message date | UTC reporting cutoff in `YYYY-MM-DD` format |
+
+## Identity inference
+
+The tool first looks for sent-folder evidence such as Gmail labels or sent-folder headers. It then falls back to `From` address frequency. A top result is only accepted when folder evidence or frequency is clearly dominant. Ambiguous exports require an explicit identity.
+
+Common consumer-provider domains are maintained in the implementation as weak hints; exact inferred addresses remain the classification key. The inexact nature of provider-only matching means that a shared domain is never sufficient to identify the mailbox owner.
+
+## Report behavior
+
+- Sent mail means a message `From` address matches an explicit or inferred owner identity.
+- Received mail means an owner identity appears in `To`, `Cc`, or `Bcc`.
+- Each recipient address is counted once per message.
+- Weekly reporting uses ISO year/week buckets and UTC.
+- The latest 104 ISO weeks include zero-volume weeks.
+- Older mail is grouped by UTC calendar year.
+- Mailing lists are identified by `List-Id`, `List-Post`, or `List-Unsubscribe`.
+- Individual malformed messages produce warnings and do not prevent the remaining messages from being reported.
