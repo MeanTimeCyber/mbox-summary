@@ -2,11 +2,15 @@
 package mbox
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/mail"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	emersion "github.com/emersion/go-mbox"
@@ -55,6 +59,8 @@ type ParseOptions struct {
 	TotalBytes      int64
 	DiscardMessages bool
 	MessageHandler  func(Message)
+	Workers         int
+	MaxHeaderBytes  int64
 }
 
 // countingReader records bytes consumed while emersion/go-mbox streams a mailbox.
@@ -68,6 +74,86 @@ func (r *countingReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	r.bytesRead += int64(n)
 	return n, err
+}
+
+// headerJob contains a bounded header block for worker-thread parsing.
+type headerJob struct {
+	Index  int
+	Header []byte
+}
+
+// headerResult contains the parsed metadata or an extraction error for one record.
+type headerResult struct {
+	Index   int
+	Message Message
+	Err     error
+}
+
+// extractHeaders reads only through the RFC 5322 header separator, then discards
+// the remaining body before the next mbox record is requested.
+func extractHeaders(r io.Reader, maxHeaderBytes int64) ([]byte, error) {
+	buffered := bufio.NewReader(r)
+	header := make([]byte, 0, 4096)
+	var bytesRead int64
+
+	for {
+		line, err := buffered.ReadBytes('\n')
+		if len(line) > 0 {
+			bytesRead += int64(len(line))
+			if bytesRead > maxHeaderBytes {
+				_, _ = io.Copy(io.Discard, buffered)
+				return nil, errors.New("email header block exceeds configured size limit")
+			}
+			header = append(header, line...)
+		}
+		if len(line) == 1 && line[0] == '\n' ||
+			len(line) == 2 && line[0] == '\r' && line[1] == '\n' {
+			_, err = io.Copy(io.Discard, buffered)
+			if err != nil {
+				return nil, err
+			}
+			return header, nil
+		}
+		if errors.Is(err, io.EOF) {
+			if len(header) == 0 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			_, copyErr := io.Copy(io.Discard, buffered)
+			if copyErr != nil {
+				return nil, copyErr
+			}
+			return header, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// processHeaderResult applies one worker result to parser output in archive order.
+func processHeaderResult(result *ParseResult, parsedCount *int, options ParseOptions, bytesRead int64, value headerResult) {
+	if value.Err != nil {
+		result.Warnings = append(result.Warnings, model.ParseWarning{
+			MessageIndex: value.Index,
+			Text:         value.Err.Error(),
+		})
+		reportProgress(options, bytesRead, value.Index, *parsedCount, len(result.Warnings))
+		return
+	}
+	if !value.Message.DateValid {
+		result.Warnings = append(result.Warnings, model.ParseWarning{
+			MessageIndex: value.Index,
+			Text:         "message is missing a valid Date header",
+		})
+	}
+	if options.MessageHandler != nil {
+		options.MessageHandler(value.Message)
+	}
+	if !options.DiscardMessages {
+		result.Messages = append(result.Messages, value.Message)
+	}
+	(*parsedCount)++
+	reportProgress(options, bytesRead, value.Index, *parsedCount, len(result.Warnings))
 }
 
 // ProviderDomains lists common consumer email provider domains as weak inference hints.
@@ -108,20 +194,97 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	workers := options.Workers
+	if workers < 1 {
+		workers = runtime.GOMAXPROCS(0)
+		if workers > 4 {
+			workers = 4
+		}
+	}
+	maxHeaderBytes := options.MaxHeaderBytes
+	if maxHeaderBytes < 1 {
+		maxHeaderBytes = 1024 * 1024
+	}
+
 	counted := &countingReader{reader: r}
 	reader := emersion.NewReader(counted)
 	parsedCount := 0
+	jobs := make(chan headerJob, workers*2)
+	results := make(chan headerResult, workers*2)
+	var workerGroup sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		workerGroup.Add(1)
+		go func() {
+			defer workerGroup.Done()
+			for job := range jobs {
+				message, err := parseRecord(bytes.NewReader(job.Header))
+				select {
+				case results <- headerResult{Index: job.Index, Message: message, Err: err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		workerGroup.Wait()
+		close(results)
+	}()
+
+	pending := make(map[int]headerResult)
+	nextResult := 0
+	processResults := func() error {
+		for {
+			select {
+			case resultValue, ok := <-results:
+				if !ok {
+					results = nil
+					for _, value := range pending {
+						processHeaderResult(&result, &parsedCount, options, counted.bytesRead, value)
+					}
+					pending = nil
+					return nil
+				}
+				pending[resultValue.Index] = resultValue
+			default:
+				for pending != nil {
+					value, exists := pending[nextResult]
+					if !exists {
+						return nil
+					}
+					delete(pending, nextResult)
+					processHeaderResult(&result, &parsedCount, options, counted.bytesRead, value)
+					nextResult++
+				}
+				return nil
+			}
+		}
+	}
 
 	for index := 0; ; index++ {
 		if err := ctx.Err(); err != nil {
+			close(jobs)
 			return result, err
 		}
 		record, err := reader.NextMessage()
 		if errors.Is(err, io.EOF) {
+			close(jobs)
+			for value := range results {
+				pending[value.Index] = value
+			}
+			for nextResult < index {
+				value, exists := pending[nextResult]
+				if exists {
+					processHeaderResult(&result, &parsedCount, options, counted.bytesRead, value)
+				}
+				nextResult++
+			}
 			reportProgress(options, counted.bytesRead, index, parsedCount, len(result.Warnings))
 			break
 		}
 		if err != nil {
+			close(jobs)
 			if index == 0 {
 				return result, err
 			}
@@ -132,30 +295,22 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 			reportProgress(options, counted.bytesRead, index, parsedCount, len(result.Warnings))
 			break
 		}
-
-		message, err := parseRecord(record)
-		if err != nil {
-			result.Warnings = append(result.Warnings, model.ParseWarning{
-				MessageIndex: index,
-				Text:         err.Error(),
-			})
-			reportProgress(options, counted.bytesRead, index, parsedCount, len(result.Warnings))
-			continue
+		header, headerErr := extractHeaders(record, maxHeaderBytes)
+		if headerErr == nil {
+			job := headerJob{Index: index, Header: header}
+			select {
+			case jobs <- job:
+			case <-ctx.Done():
+				close(jobs)
+				return result, ctx.Err()
+			}
+		} else {
+			pending[index] = headerResult{Index: index, Err: headerErr}
 		}
-		if !message.DateValid {
-			result.Warnings = append(result.Warnings, model.ParseWarning{
-				MessageIndex: index,
-				Text:         "message is missing a valid Date header",
-			})
+		if err := processResults(); err != nil {
+			close(jobs)
+			return result, err
 		}
-		if options.MessageHandler != nil {
-			options.MessageHandler(message)
-		}
-		if !options.DiscardMessages {
-			result.Messages = append(result.Messages, message)
-		}
-		parsedCount++
-		reportProgress(options, counted.bytesRead, index, parsedCount, len(result.Warnings))
 	}
 
 	return result, nil

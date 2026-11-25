@@ -42,6 +42,7 @@ Available flags:
 | `--as-of` | Latest valid message date | UTC reporting cutoff in `YYYY-MM-DD` format |
 | `--timeout` | `0` (disabled) | Maximum parsing duration, for example `30m` or `2h` |
 | `--progress` | `true` | Show byte-based parsing progress on stderr |
+| `--workers` | up to 4 | Number of parallel RFC 5322 header-parsing workers |
 
 ## Identity inference
 

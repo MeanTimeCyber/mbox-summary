@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"time"
 
@@ -53,6 +54,7 @@ func run(args []string) error {
 	asOf := fs.String("as-of", "", "optional UTC cutoff date in YYYY-MM-DD")
 	timeout := fs.Duration("timeout", 0, "maximum parsing time; 0 disables the timeout")
 	showProgress := fs.Bool("progress", true, "show parsing progress")
+	workers := fs.Int("workers", min(runtime.GOMAXPROCS(0), 4), "number of header-parsing workers")
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
@@ -65,6 +67,9 @@ func run(args []string) error {
 	}
 	if *top < 1 {
 		return errors.New("--top must be at least 1")
+	}
+	if *workers < 1 {
+		return errors.New("--workers must be at least 1")
 	}
 
 	var cutoff time.Time
@@ -100,6 +105,7 @@ func run(args []string) error {
 		return mbox.ParseOptions{
 			Context:    parseContext,
 			TotalBytes: inputInfo.Size(),
+			Workers:    *workers,
 			Progress: func(p mbox.ParseProgress) {
 				if !*showProgress {
 					return

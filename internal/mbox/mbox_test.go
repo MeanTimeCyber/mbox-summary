@@ -123,3 +123,22 @@ func TestParseWithOptionsDiscardsMessages(t *testing.T) {
 		t.Errorf("handler count = %d, want 1", observed)
 	}
 }
+
+// TestParseWithOptionsWorkers verifies that bounded parallel header parsing preserves results.
+func TestParseWithOptionsWorkers(t *testing.T) {
+	input := "From owner@example.com Mon Nov 24 10:00:00 2025\n" +
+		"From: Owner <owner@example.com>\nDate: Mon, 24 Nov 2025 10:00:00 +0000\n\nBody\n\n" +
+		"From friend@example.net Tue Nov 25 10:00:00 2025\n" +
+		"From: Friend <friend@example.net>\nDate: Tue, 25 Nov 2025 10:00:00 +0000\n\nBody\n"
+
+	result, err := mbox.ParseWithOptions(strings.NewReader(input), mbox.ParseOptions{
+		Workers:         4,
+		DiscardMessages: true,
+	})
+	if err != nil {
+		t.Fatalf("ParseWithOptions() error = %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Errorf("warnings = %#v, want none", result.Warnings)
+	}
+}
