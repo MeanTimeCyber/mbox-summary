@@ -2,10 +2,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -49,6 +51,8 @@ func run(args []string) error {
 	output := fs.String("output", "summary.html", "path to the output HTML file")
 	top := fs.Int("top", 50, "number of top sender and recipient addresses")
 	asOf := fs.String("as-of", "", "optional UTC cutoff date in YYYY-MM-DD")
+	timeout := fs.Duration("timeout", 0, "maximum parsing time; 0 disables the timeout")
+	showProgress := fs.Bool("progress", true, "show parsing progress")
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
@@ -83,25 +87,77 @@ func run(args []string) error {
 		return errors.New("input and output paths refer to the same file")
 	}
 
-	inputFile, err := os.Open(*input)
-	if err != nil {
-		return fmt.Errorf("open input: %w", err)
+	parseContext, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignal()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		parseContext, cancel = context.WithTimeout(parseContext, *timeout)
+		defer cancel()
 	}
-	defer inputFile.Close()
 
-	result, err := mbox.Parse(inputFile)
+	var lastProgress time.Time
+	progressOptions := func() mbox.ParseOptions {
+		return mbox.ParseOptions{
+			Context:    parseContext,
+			TotalBytes: inputInfo.Size(),
+			Progress: func(p mbox.ParseProgress) {
+				if !*showProgress {
+					return
+				}
+				now := time.Now()
+				if p.MessageIndex > 0 && now.Sub(lastProgress) < 250*time.Millisecond {
+					return
+				}
+				lastProgress = now
+				if p.TotalBytes > 0 {
+					percent := float64(p.BytesRead) * 100 / float64(p.TotalBytes)
+					if percent > 100 {
+						percent = 100
+					}
+					fmt.Fprintf(os.Stderr, "\rparsing: %.1f%%, %d messages, %d warnings",
+						percent, p.MessageCount, p.WarningCount)
+					return
+				}
+				fmt.Fprintf(os.Stderr, "\rparsing: %d messages, %d warnings",
+					p.MessageCount, p.WarningCount)
+			},
+		}
+	}
+
+	firstPassFile, err := os.Open(*input)
 	if err != nil {
+		return fmt.Errorf("open input for identity pass: %w", err)
+	}
+	analyzer := mbox.NewIdentityAnalyzer()
+	firstOptions := progressOptions()
+	firstOptions.DiscardMessages = true
+	firstOptions.MessageHandler = analyzer.Observe
+	firstResult, err := mbox.ParseWithOptions(firstPassFile, firstOptions)
+	closeErr := firstPassFile.Close()
+	if *showProgress {
+		fmt.Fprintln(os.Stderr)
+	}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
+		}
+		if errors.Is(err, context.Canceled) {
+			return errors.New("mailbox parsing canceled")
+		}
 		return fmt.Errorf("parse mailbox: %w", err)
 	}
-	if len(result.Messages) == 0 {
+	if closeErr != nil {
+		return fmt.Errorf("close input after identity pass: %w", closeErr)
+	}
+	if analyzer.Count() == 0 {
 		return errors.New("input contains no parseable emails")
 	}
 
 	if cutoff.IsZero() {
-		cutoff = newestMessageDate(result.Messages)
+		cutoff = analyzer.Newest()
 	}
 
-	inferred := mbox.InferIdentity(result.Messages)
+	inferred := analyzer.Inference()
 	ownerIdentities := identities
 	if len(ownerIdentities) == 0 {
 		if inferred.Confident {
@@ -115,8 +171,34 @@ func run(args []string) error {
 		}
 	}
 
-	summary := stats.Summarize(result.Messages, ownerIdentities, cutoff, *top)
-	summary.ParseWarnings = result.Warnings
+	secondPassFile, err := os.Open(*input)
+	if err != nil {
+		return fmt.Errorf("open input for aggregation pass: %w", err)
+	}
+	accumulator := stats.NewAccumulator(ownerIdentities, cutoff, *top)
+	secondOptions := progressOptions()
+	secondOptions.DiscardMessages = true
+	secondOptions.MessageHandler = accumulator.Observe
+	secondResult, err := mbox.ParseWithOptions(secondPassFile, secondOptions)
+	closeErr = secondPassFile.Close()
+	if *showProgress {
+		fmt.Fprintln(os.Stderr)
+	}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
+		}
+		if errors.Is(err, context.Canceled) {
+			return errors.New("mailbox parsing canceled")
+		}
+		return fmt.Errorf("parse mailbox for aggregation: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close input after aggregation pass: %w", closeErr)
+	}
+
+	summary := accumulator.Summary()
+	summary.ParseWarnings = append(firstResult.Warnings, secondResult.Warnings...)
 	summary.Inference = inferred
 
 	if err := report.WriteFile(*output, summary); err != nil {
@@ -125,15 +207,4 @@ func run(args []string) error {
 
 	fmt.Fprintf(os.Stdout, "wrote %s (%d messages)\n", *output, summary.MessageCount)
 	return nil
-}
-
-// newestMessageDate finds the latest valid Date header for report determinism.
-func newestMessageDate(messages []mbox.Message) time.Time {
-	var newest time.Time
-	for _, message := range messages {
-		if message.Date.After(newest) {
-			newest = message.Date
-		}
-	}
-	return newest
 }

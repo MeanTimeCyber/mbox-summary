@@ -99,3 +99,33 @@ func TestSummarizeExcludesFutureMessages(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeSeparatesMailingListRecipient verifies list metadata is applied to the list address only.
+func TestSummarizeSeparatesMailingListRecipient(t *testing.T) {
+	cutoff := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	message := mbox.Message{
+		Date: cutoff,
+		From: mbox.Address{Address: "sender@example.net"},
+		To: []mbox.Address{
+			{Address: "team@example.org"},
+			{Address: "personal@example.net"},
+		},
+		ListHeaders:   map[string]bool{"List-Post": true},
+		ListAddresses: []mbox.Address{{Address: "team@example.org"}},
+	}
+
+	summary := stats.Summarize([]mbox.Message{message}, []string{"me@example.com"}, cutoff, 50)
+	teamFound := false
+	personalFound := false
+	for _, recipient := range summary.TopRecipients {
+		if recipient.Address == "team@example.org" {
+			teamFound = recipient.MailingList
+		}
+		if recipient.Address == "personal@example.net" {
+			personalFound = !recipient.MailingList
+		}
+	}
+	if !teamFound || !personalFound {
+		t.Errorf("mailing-list separation team/personal = %v/%v, want true/true", teamFound, personalFound)
+	}
+}

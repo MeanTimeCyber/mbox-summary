@@ -13,87 +13,117 @@ import (
 
 // Summarize builds all weekly, yearly, and address-ranking statistics.
 func Summarize(messages []mbox.Message, identities []string, cutoff time.Time, top int) model.Summary {
-	owners := normalizedIdentitySet(identities)
+	accumulator := NewAccumulator(identities, cutoff, top)
+	for _, message := range messages {
+		accumulator.Observe(message)
+	}
+	return accumulator.Summary()
+}
+
+// Accumulator incrementally aggregates messages without retaining the mailbox.
+type Accumulator struct {
+	owners          map[string]bool
+	cutoff          time.Time
+	top             int
+	messageCount    int
+	weeklyMap       map[string]*model.PeriodStats
+	yearlyMap       map[string]*model.PeriodStats
+	senderCounts    map[string]int
+	senderNames     map[string]string
+	senderLists     map[string]bool
+	recipientCounts map[string]int
+	recipientNames  map[string]string
+	recipientLists  map[string]bool
+}
+
+// NewAccumulator creates a bounded-memory mailbox accumulator.
+func NewAccumulator(identities []string, cutoff time.Time, top int) *Accumulator {
+	return &Accumulator{
+		owners:          normalizedIdentitySet(identities),
+		cutoff:          cutoff.UTC(),
+		top:             top,
+		weeklyMap:       make(map[string]*model.PeriodStats),
+		yearlyMap:       make(map[string]*model.PeriodStats),
+		senderCounts:    make(map[string]int),
+		senderNames:     make(map[string]string),
+		senderLists:     make(map[string]bool),
+		recipientCounts: make(map[string]int),
+		recipientNames:  make(map[string]string),
+		recipientLists:  make(map[string]bool),
+	}
+}
+
+// Observe adds one message to bounded period and ranking maps.
+func (a *Accumulator) Observe(message mbox.Message) {
+	a.messageCount++
+	if message.Date.IsZero() {
+		return
+	}
+
+	date := message.Date.UTC()
+	if date.After(a.cutoff) {
+		return
+	}
+	sent := a.owners[message.From.Address]
+	receivedAddresses := uniqueAddresses(message.To, message.Cc, message.Bcc)
+	received := false
+	for _, address := range receivedAddresses {
+		if a.owners[address.Address] {
+			received = true
+			break
+		}
+	}
+
+	weeklyStart := weekStart(a.cutoff).AddDate(0, 0, -103*7)
+	if !date.Before(weeklyStart) {
+		period := isoWeekKey(date)
+		entry := periodEntry(a.weeklyMap, period)
+		if sent {
+			entry.Sent++
+		}
+		if received {
+			entry.Received++
+		}
+	} else {
+		period := date.Format("2006")
+		entry := periodEntry(a.yearlyMap, period)
+		if sent {
+			entry.Sent++
+		}
+		if received {
+			entry.Received++
+		}
+	}
+
+	if !sent && message.From.Address != "" {
+		a.senderCounts[message.From.Address]++
+		a.senderNames[message.From.Address] = preferName(a.senderNames[message.From.Address], message.From.Name)
+		a.senderLists[message.From.Address] = a.senderLists[message.From.Address] || isMailingList(message)
+	}
+
+	for _, address := range receivedAddresses {
+		if a.owners[address.Address] {
+			continue
+		}
+		a.recipientCounts[address.Address]++
+		a.recipientNames[address.Address] = preferName(a.recipientNames[address.Address], address.Name)
+		a.recipientLists[address.Address] = a.recipientLists[address.Address] ||
+			isMailingListAddress(message, address.Address)
+	}
+}
+
+// Summary returns a completed report model from the accumulated maps.
+func (a *Accumulator) Summary() model.Summary {
 	summary := model.Summary{
 		GeneratedAt:     time.Now().UTC(),
-		Cutoff:          cutoff.UTC(),
-		MessageCount:    len(messages),
-		OwnerIdentities: sortedOwners(owners),
+		Cutoff:          a.cutoff,
+		MessageCount:    a.messageCount,
+		OwnerIdentities: sortedOwners(a.owners),
+		Weekly:          orderedWeekly(weekStart(a.cutoff).AddDate(0, 0, -103*7), a.cutoff, a.weeklyMap),
+		Yearly:          orderedYearly(a.yearlyMap),
+		TopSenders:      buildRanking(a.senderCounts, a.senderNames, a.senderLists, a.top),
+		TopRecipients:   buildRanking(a.recipientCounts, a.recipientNames, a.recipientLists, a.top),
 	}
-
-	weeklyStart := weekStart(cutoff).AddDate(0, 0, -103*7)
-	weeklyMap := make(map[string]*model.PeriodStats)
-	yearlyMap := make(map[string]*model.PeriodStats)
-
-	senderCounts := make(map[string]int)
-	senderNames := make(map[string]string)
-	senderLists := make(map[string]bool)
-	recipientCounts := make(map[string]int)
-	recipientNames := make(map[string]string)
-	recipientLists := make(map[string]bool)
-
-	for _, message := range messages {
-		if message.Date.IsZero() {
-			continue
-		}
-		date := message.Date.UTC()
-		// A fixed or inferred cutoff defines the complete report; future records
-		// must not inflate historical totals or sender/recipient rankings.
-		if date.After(cutoff) {
-			continue
-		}
-		sent := owners[message.From.Address]
-
-		// Count one received event per message, while ranking every unique recipient address.
-		receivedAddresses := uniqueAddresses(message.To, message.Cc, message.Bcc)
-		received := false
-		for _, address := range receivedAddresses {
-			if owners[address.Address] {
-				received = true
-				break
-			}
-		}
-
-		if !date.Before(weeklyStart) && !date.After(cutoff) {
-			period := isoWeekKey(date)
-			entry := periodEntry(weeklyMap, period)
-			if sent {
-				entry.Sent++
-			}
-			if received {
-				entry.Received++
-			}
-		} else if date.Before(weeklyStart) {
-			period := date.Format("2006")
-			entry := periodEntry(yearlyMap, period)
-			if sent {
-				entry.Sent++
-			}
-			if received {
-				entry.Received++
-			}
-		}
-
-		if !sent && message.From.Address != "" {
-			senderCounts[message.From.Address]++
-			senderNames[message.From.Address] = preferName(senderNames[message.From.Address], message.From.Name)
-			senderLists[message.From.Address] = senderLists[message.From.Address] || isMailingList(message)
-		}
-
-		for _, address := range receivedAddresses {
-			if owners[address.Address] {
-				continue
-			}
-			recipientCounts[address.Address]++
-			recipientNames[address.Address] = preferName(recipientNames[address.Address], address.Name)
-			recipientLists[address.Address] = recipientLists[address.Address] || isMailingList(message)
-		}
-	}
-
-	summary.Weekly = orderedWeekly(weeklyStart, cutoff, weeklyMap)
-	summary.Yearly = orderedYearly(yearlyMap)
-	summary.TopSenders = buildRanking(senderCounts, senderNames, senderLists, top)
-	summary.TopRecipients = buildRanking(recipientCounts, recipientNames, recipientLists, top)
 	return summary
 }
 
@@ -202,6 +232,26 @@ func isMailingList(message mbox.Message) bool {
 	return message.ListHeaders["List-Id"] ||
 		message.ListHeaders["List-Post"] ||
 		message.ListHeaders["List-Unsubscribe"]
+}
+
+// isMailingListAddress matches a recipient only against list addresses or List-Id domains.
+func isMailingListAddress(message mbox.Message, recipient string) bool {
+	for _, address := range message.ListAddresses {
+		if address.Address == recipient {
+			return true
+		}
+	}
+
+	at := strings.LastIndex(recipient, "@")
+	if at >= 0 {
+		domain := strings.ToLower(recipient[at+1:])
+		for _, listDomain := range message.ListDomains {
+			if domain == listDomain || strings.HasSuffix(domain, "."+listDomain) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // preferName keeps the first useful display name encountered for an address.

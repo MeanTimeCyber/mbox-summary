@@ -2,6 +2,7 @@
 package mbox_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -84,5 +85,41 @@ func TestInferIdentityRejectsAmbiguousFrequency(t *testing.T) {
 	inference := mbox.InferIdentity(messages)
 	if inference.Confident {
 		t.Error("InferIdentity() should be ambiguous for a two-address tie")
+	}
+}
+
+// TestParseWithOptionsCancel verifies context cancellation stops streaming parsing.
+func TestParseWithOptionsCancel(t *testing.T) {
+	input := "From sender@example.net Mon Nov 24 10:00:00 2025\n" +
+		"From: sender@example.net\nDate: Mon, 24 Nov 2025 10:00:00 +0000\n\nBody\n"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := mbox.ParseWithOptions(strings.NewReader(input), mbox.ParseOptions{Context: ctx})
+	if err != context.Canceled {
+		t.Fatalf("ParseWithOptions() error = %v, want context.Canceled", err)
+	}
+}
+
+// TestParseWithOptionsDiscardsMessages verifies streaming mode keeps no message slices.
+func TestParseWithOptionsDiscardsMessages(t *testing.T) {
+	input := "From sender@example.net Mon Nov 24 10:00:00 2025\n" +
+		"From: sender@example.net\nDate: Mon, 24 Nov 2025 10:00:00 +0000\n\nBody\n"
+	observed := 0
+
+	result, err := mbox.ParseWithOptions(strings.NewReader(input), mbox.ParseOptions{
+		DiscardMessages: true,
+		MessageHandler: func(_ mbox.Message) {
+			observed++
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParseWithOptions() error = %v", err)
+	}
+	if len(result.Messages) != 0 {
+		t.Errorf("retained message count = %d, want 0", len(result.Messages))
+	}
+	if observed != 1 {
+		t.Errorf("handler count = %d, want 1", observed)
 	}
 }
