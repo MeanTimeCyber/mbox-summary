@@ -40,6 +40,9 @@ func TestParseExtractsMetadata(t *testing.T) {
 	if message.Date.Year() != 2025 {
 		t.Errorf("Date year = %d, want 2025", message.Date.Year())
 	}
+	if !message.DateValid {
+		t.Error("DateValid = false, want true")
+	}
 }
 
 // TestParseRejectsFileWithoutMboxEnvelope verifies strict archive-envelope validation.

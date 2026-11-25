@@ -37,6 +37,11 @@ func Summarize(messages []mbox.Message, identities []string, cutoff time.Time, t
 			continue
 		}
 		date := message.Date.UTC()
+		// A fixed or inferred cutoff defines the complete report; future records
+		// must not inflate historical totals or sender/recipient rankings.
+		if date.After(cutoff) {
+			continue
+		}
 		sent := owners[message.From.Address]
 
 		// Count one received event per message, while ranking every unique recipient address.

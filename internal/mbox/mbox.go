@@ -2,8 +2,6 @@
 package mbox
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"io"
 	"net/mail"
@@ -17,6 +15,7 @@ import (
 // Message contains normalized metadata extracted from one email.
 type Message struct {
 	Date        time.Time
+	DateValid   bool
 	From        Address
 	To          []Address
 	Cc          []Address
@@ -90,6 +89,12 @@ func Parse(r io.Reader) (ParseResult, error) {
 			})
 			continue
 		}
+		if !message.DateValid {
+			result.Warnings = append(result.Warnings, model.ParseWarning{
+				MessageIndex: index,
+				Text:         "message is missing a valid Date header",
+			})
+		}
 		result.Messages = append(result.Messages, message)
 	}
 
@@ -98,12 +103,9 @@ func Parse(r io.Reader) (ParseResult, error) {
 
 // parseRecord parses one RFC 5322 record and returns only the metadata needed by the report.
 func parseRecord(r io.Reader) (Message, error) {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return Message{}, err
-	}
-
-	parsed, err := mail.ReadMessage(bufio.NewReader(bytes.NewReader(raw)))
+	// ReadMessage parses headers while exposing the body separately. It does not
+	// need to consume the body here because only metadata is used by summaries.
+	parsed, err := mail.ReadMessage(r)
 	if err != nil {
 		return Message{}, err
 	}
@@ -126,6 +128,7 @@ func parseRecord(r io.Reader) (Message, error) {
 
 	if date, err := mail.ParseDate(parsed.Header.Get("Date")); err == nil {
 		message.Date = date.UTC()
+		message.DateValid = true
 	}
 
 	message.SentFolder = hasSentFolderHeader(parsed.Header)
@@ -177,8 +180,6 @@ func hasSentFolderHeader(header mail.Header) bool {
 	values := []string{
 		header.Get("X-Gmail-Labels"),
 		header.Get("X-Folder"),
-		header.Get("X-Mozilla-Status"),
-		header.Get("X-MS-Has-Attach"),
 	}
 	for _, value := range values {
 		lower := strings.ToLower(value)
@@ -242,7 +243,9 @@ func InferIdentity(messages []Message) model.IdentityInference {
 	confident := false
 
 	if topFolder > 0 {
-		confident = len(names) == 1 || topFolder > folder[names[1]]
+		// Folder evidence is strong only for a unique address or a clear lead.
+		confident = len(names) == 1 ||
+			(topFolder > folder[names[1]] && topFolder >= topFrequency/2)
 	} else if topFrequency >= 2 && (len(names) == 1 || topFrequency >= frequency[names[1]]*2) {
 		confident = true
 	}

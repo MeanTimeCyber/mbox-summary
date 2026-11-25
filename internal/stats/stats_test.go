@@ -74,3 +74,28 @@ func TestSummarizeDeduplicatesRecipientAddresses(t *testing.T) {
 		t.Errorf("recipient address = %q, want team@example.net", summary.TopRecipients[0].Address)
 	}
 }
+
+// TestSummarizeExcludesFutureMessages verifies that a fixed cutoff caps every ranking and period.
+func TestSummarizeExcludesFutureMessages(t *testing.T) {
+	cutoff := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	messages := []mbox.Message{
+		{
+			Date: cutoff.AddDate(0, 0, 1),
+			From: mbox.Address{Address: "future@example.net"},
+			To:   []mbox.Address{{Address: "me@example.com"}},
+		},
+	}
+
+	summary := stats.Summarize(messages, []string{"me@example.com"}, cutoff, 50)
+	if len(summary.TopSenders) != 0 {
+		t.Errorf("top senders = %#v, want no future senders", summary.TopSenders)
+	}
+	if len(summary.TopRecipients) != 0 {
+		t.Errorf("top recipients = %#v, want no future recipients", summary.TopRecipients)
+	}
+	for _, period := range summary.Weekly {
+		if period.Sent != 0 || period.Received != 0 {
+			t.Errorf("future message affected period %#v", period)
+		}
+	}
+}

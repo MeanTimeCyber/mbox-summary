@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/meantimecyber/mbox-summary/internal/model"
@@ -43,13 +44,38 @@ func WriteFile(outputPath string, summary model.Summary) error {
 		InferenceJSON:   mustJSON(summary.Inference),
 	}
 
-	file, err := os.Create(outputPath)
+	directory := filepath.Dir(outputPath)
+	file, err := os.CreateTemp(directory, ".mbox-summary-*")
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	tempPath := file.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			file.Close()
+			os.Remove(tempPath)
+		}
+	}()
 
-	return htmlTemplate().Execute(file, data)
+	if err := file.Chmod(0o644); err != nil {
+		return err
+	}
+	if err := htmlTemplate().Execute(file, data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, outputPath); err != nil {
+		return err
+	}
+
+	cleanup = false
+	return nil
 }
 
 // join joins owner addresses into display text.

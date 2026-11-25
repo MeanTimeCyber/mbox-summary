@@ -72,6 +72,17 @@ func run(args []string) error {
 		cutoff = parsed
 	}
 
+	inputInfo, err := os.Stat(*input)
+	if err != nil {
+		return fmt.Errorf("stat input: %w", err)
+	}
+	if !inputInfo.Mode().IsRegular() {
+		return fmt.Errorf("input is not a regular file: %s", *input)
+	}
+	if outputInfo, err := os.Stat(*output); err == nil && os.SameFile(inputInfo, outputInfo) {
+		return errors.New("input and output paths refer to the same file")
+	}
+
 	inputFile, err := os.Open(*input)
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
