@@ -57,6 +57,7 @@ Available flags:
 | `--progress` | `true` | Show byte-based parsing progress on stderr |
 | `--workers` | up to 4 | Number of parallel RFC 5322 header-parsing workers |
 | `--attachments-dir` | Disabled | Export unique attachment payloads into this folder |
+| `--sqlite` | Disabled | Append metadata-only email records to a SQLite database |
 
 ## Attachments
 
@@ -72,6 +73,19 @@ Export all unique-email attachments to a local folder:
 ```
 
 Export filenames use a date, a 12-character truncated Message-ID, a three-digit attachment index, and a sanitized original filename. Existing filenames receive a numeric suffix instead of being overwritten.
+
+## SQLite export
+
+Create or append to a metadata-only SQLite database:
+
+```bash
+./mbox-summary \
+  --input mailbox.mbox \
+  --output summary.html \
+  --sqlite summary.db
+```
+
+SQLite exports include runs, source files, email metadata, recipients, threads, attachments, and run-specific aggregates. Message bodies are never stored.
 | `--folder` | Inferred | Folder mapping in `Folder=path` form; repeat for multiple exports |
 
 ## Directory exports

@@ -15,6 +15,7 @@ import (
 	"github.com/meantimecyber/mbox-summary/internal/mbox"
 	"github.com/meantimecyber/mbox-summary/internal/model"
 	"github.com/meantimecyber/mbox-summary/internal/report"
+	sqliteexport "github.com/meantimecyber/mbox-summary/internal/sqliteexport"
 	"github.com/meantimecyber/mbox-summary/internal/stats"
 )
 
@@ -82,6 +83,7 @@ func run(args []string) error {
 	showProgress := fs.Bool("progress", true, "show parsing progress")
 	workers := fs.Int("workers", min(runtime.GOMAXPROCS(0), 4), "number of header-parsing workers")
 	attachmentsDir := fs.String("attachments-dir", "", "optional folder where unique message attachments are exported")
+	sqlitePath := fs.String("sqlite", "", "optional SQLite metadata database path")
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
@@ -233,6 +235,41 @@ func run(args []string) error {
 			)
 		}
 	}
+	ownerSet := make(map[string]bool)
+	for _, owner := range ownerIdentities {
+		owner = strings.ToLower(strings.TrimSpace(owner))
+		if owner != "" {
+			ownerSet[owner] = true
+		}
+	}
+
+	var sqliteStore *sqliteexport.Store
+	sqliteCompleted := false
+	if *sqlitePath != "" {
+		sqliteStore, err = sqliteexport.Open(*sqlitePath)
+		if err != nil {
+			return fmt.Errorf("open SQLite database: %w", err)
+		}
+		defer sqliteStore.Close()
+		owners := make([]string, 0, len(ownerIdentities))
+		for _, owner := range ownerIdentities {
+			owner = strings.ToLower(strings.TrimSpace(owner))
+			if owner != "" {
+				owners = append(owners, owner)
+				ownerSet[owner] = true
+			}
+		}
+		if _, err := sqliteStore.StartRun(*input, cutoff, owners); err != nil {
+			sqliteStore.RollbackBatch()
+			return fmt.Errorf("start SQLite run: %w", err)
+		}
+		defer func() {
+			if !sqliteCompleted {
+				sqliteStore.RollbackBatch()
+				sqliteStore.FailRun()
+			}
+		}()
+	}
 
 	accumulator := stats.NewAccumulator(ownerIdentities, cutoff, *top)
 	dedupe, err := mbox.OpenDedupeIndex()
@@ -246,6 +283,12 @@ func run(args []string) error {
 	exportedFiles := 0
 	exportedBytes := int64(0)
 	for sourceIndex, source := range sources {
+		if sqliteStore != nil {
+			if err := sqliteStore.UpsertSource(source, sourceCoverage[sourceIndex].Messages, sourceCoverage[sourceIndex].Warnings); err != nil {
+				sqliteStore.FailRun()
+				return fmt.Errorf("store SQLite source %s: %w", source.Path, err)
+			}
+		}
 		secondPassFile, err := os.Open(source.Path)
 		if err != nil {
 			return fmt.Errorf("open input for aggregation %s: %w", source.Path, err)
@@ -266,14 +309,30 @@ func run(args []string) error {
 			}
 			if err == nil && unique {
 				accumulator.Observe(message)
+				exported := make([]sqliteexport.ExportedAttachment, 0)
 				if *attachmentsDir != "" {
-					count, bytes, exportErr := mbox.ExportAttachments(*attachmentsDir, message)
+					detailed, exportErr := mbox.ExportAttachmentsDetailed(*attachmentsDir, message)
 					if exportErr != nil {
 						dedupeErr = exportErr
 						return
 					}
-					exportedFiles += count
-					exportedBytes += bytes
+					for _, item := range detailed {
+						exportedFiles++
+						exportedBytes += item.Size
+						exported = append(exported, sqliteexport.ExportedAttachment{
+							Index:       item.Index,
+							Name:        item.Name,
+							ExportPath:  item.ExportPath,
+							Size:        item.Size,
+							ContentType: item.ContentType,
+							PayloadSHA:  item.PayloadSHA,
+						})
+					}
+				}
+				if sqliteStore != nil {
+					if err := sqliteStore.UpsertEmail(source, message, ownerSet, exported); err != nil {
+						dedupeErr = err
+					}
 				}
 			}
 		}
@@ -315,8 +374,21 @@ func run(args []string) error {
 	summary.Attachments.ExportedFiles = exportedFiles
 	summary.Attachments.ExportedBytes = exportedBytes
 
+	if sqliteStore != nil {
+		if err := sqliteStore.StoreSummary(summary); err != nil {
+			sqliteStore.FailRun()
+			return fmt.Errorf("store SQLite aggregates: %w", err)
+		}
+	}
+
 	if err := report.WriteFile(*output, summary); err != nil {
 		return fmt.Errorf("write HTML report: %w", err)
+	}
+	if sqliteStore != nil {
+		if err := sqliteStore.FinishRun(); err != nil {
+			return fmt.Errorf("finish SQLite run: %w", err)
+		}
+		sqliteCompleted = true
 	}
 
 	fmt.Fprintf(os.Stdout, "wrote %s (%d messages)\n", *output, summary.MessageCount)
