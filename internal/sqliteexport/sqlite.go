@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS emails (
  sent INTEGER NOT NULL DEFAULT 0,
  received INTEGER NOT NULL DEFAULT 0,
  mailing_list INTEGER NOT NULL DEFAULT 0,
+ has_attachment INTEGER NOT NULL DEFAULT 0,
  subject_normalized TEXT,
  source_id TEXT,
  first_seen_run TEXT,
@@ -271,6 +272,9 @@ CREATE TABLE IF NOT EXISTS attachment_type_rankings (
 	if err != nil {
 		return err
 	}
+	if err := store.ensureEmailAttachmentColumn(); err != nil {
+		return err
+	}
 	var version string
 	if err := store.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 		return err
@@ -281,19 +285,51 @@ CREATE TABLE IF NOT EXISTS attachment_type_rankings (
 	return nil
 }
 
+// ensureEmailAttachmentColumn adds the attachment flag to databases created before it existed.
+func (store *Store) ensureEmailAttachmentColumn() error {
+	rows, err := store.db.Query("PRAGMA table_info(emails)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue interface{}
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "has_attachment" {
+			found = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = store.db.Exec("ALTER TABLE emails ADD COLUMN has_attachment INTEGER NOT NULL DEFAULT 0")
+	return err
+}
+
 // prepareStatements prepares the high-frequency email write statements once.
 func (store *Store) prepareStatements() error {
 	var err error
 	store.emailStmt, err = store.db.Prepare(`
 INSERT INTO emails(email_id,message_id,fallback_key,date_utc,subject,sender_address,sender_name,
- folder,sent,received,mailing_list,subject_normalized,source_id,first_seen_run,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ folder,sent,received,mailing_list,has_attachment,subject_normalized,source_id,first_seen_run,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(email_id) DO UPDATE SET
  message_id=excluded.message_id, fallback_key=excluded.fallback_key, date_utc=excluded.date_utc,
  subject=excluded.subject, sender_address=excluded.sender_address, sender_name=excluded.sender_name,
  folder=excluded.folder, sent=MAX(emails.sent,excluded.sent),
  received=MAX(emails.received,excluded.received),
  mailing_list=MAX(emails.mailing_list,excluded.mailing_list),
+ has_attachment=MAX(emails.has_attachment,excluded.has_attachment),
  subject_normalized=excluded.subject_normalized, source_id=emails.source_id,
  updated_at=excluded.updated_at`)
 	if err != nil {
@@ -531,6 +567,7 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 	mailingList := message.ListHeaders["List-Id"] ||
 		message.ListHeaders["List-Post"] ||
 		message.ListHeaders["List-Unsubscribe"]
+	hasAttachment := len(message.Attachments) > 0
 	threadKey, normalizedSubject := normalizeThreadKey(message)
 	sourceID := store.sourceIDs[source.Path]
 	if sourceID == "" {
@@ -552,6 +589,7 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 		emailKey, optionalMessageID(message.MessageID), emailKey,
 		dateUTC, message.Subject, message.From.Address, message.From.Name,
 		string(message.Folder), boolInt(sent), boolInt(received), boolInt(mailingList),
+		boolInt(hasAttachment),
 		normalizedSubject, sourceID, store.runID, now); err != nil {
 		return err
 	}

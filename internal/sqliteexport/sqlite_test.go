@@ -42,13 +42,14 @@ func TestSQLiteAppendRun(t *testing.T) {
 		t.Fatalf("UpsertSource() error = %v", err)
 	}
 	message := mbox.Message{
-		Date:      cutoff,
-		DateValid: true,
-		MessageID: "<one@example.com>",
-		Subject:   "Test",
-		From:      mbox.Address{Address: "owner@example.com", Name: "Owner"},
-		To:        []mbox.Address{{Address: "friend@example.net", Name: "Friend"}},
-		Folder:    mbox.FolderSent,
+		Date:        cutoff,
+		DateValid:   true,
+		MessageID:   "<one@example.com>",
+		Subject:     "Test",
+		From:        mbox.Address{Address: "owner@example.com", Name: "Owner"},
+		To:          []mbox.Address{{Address: "friend@example.net", Name: "Friend"}},
+		Folder:      mbox.FolderSent,
+		Attachments: []mbox.Attachment{{Name: "report.pdf", Size: 5}},
 	}
 	if err := store.UpsertEmail(source, message, map[string]bool{"owner@example.com": true}, nil); err != nil {
 		t.Fatalf("UpsertEmail() error = %v", err)
@@ -93,11 +94,70 @@ func TestSQLiteAppendRun(t *testing.T) {
 		t.Errorf("counts emails/recipients/sources/weekly = %d/%d/%d/%d, want 1/1/1/1",
 			emailCount, recipientCount, sourceCount, weeklyCount)
 	}
+	var hasAttachment int
+	if err := db.QueryRow("SELECT has_attachment FROM emails").Scan(&hasAttachment); err != nil {
+		t.Fatalf("query has_attachment: %v", err)
+	}
+	if hasAttachment != 1 {
+		t.Errorf("has_attachment = %d, want 1", hasAttachment)
+	}
 	var bodyTable int
 	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='email_bodies'").Scan(&bodyTable); err != nil {
 		t.Fatal(err)
 	}
 	if bodyTable != 0 {
 		t.Error("SQLite schema unexpectedly contains email_bodies")
+	}
+}
+
+// TestSQLiteMigratesHasAttachment verifies older databases gain the new flag column.
+func TestSQLiteMigratesHasAttachment(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "old.db")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE emails (
+ email_id TEXT PRIMARY KEY,
+ message_id TEXT,
+ fallback_key TEXT,
+ date_utc TEXT,
+ subject TEXT,
+ sender_address TEXT,
+ sender_name TEXT,
+ folder TEXT,
+ sent INTEGER NOT NULL DEFAULT 0,
+ received INTEGER NOT NULL DEFAULT 0,
+ mailing_list INTEGER NOT NULL DEFAULT 0,
+ subject_normalized TEXT,
+ source_id TEXT,
+ first_seen_run TEXT,
+ updated_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := sqliteexport.Open(databasePath)
+	if err != nil {
+		t.Fatalf("Open() migration error = %v", err)
+	}
+	defer store.Close()
+
+	db, err = sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var flagCount int
+	if err := db.QueryRow("SELECT count(*) FROM pragma_table_info('emails') WHERE name='has_attachment'").Scan(&flagCount); err != nil {
+		t.Fatal(err)
+	}
+	if flagCount != 1 {
+		t.Errorf("has_attachment column count = %d, want 1", flagCount)
 	}
 }
