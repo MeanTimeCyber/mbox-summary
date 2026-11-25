@@ -24,7 +24,6 @@ type pageData struct {
 	SendersJSON     template.JS
 	RecipientsJSON  template.JS
 	WarningsJSON    template.JS
-	InferenceJSON   template.JS
 }
 
 // WriteFile writes a complete, self-contained HTML report to outputPath.
@@ -41,7 +40,6 @@ func WriteFile(outputPath string, summary model.Summary) error {
 		SendersJSON:     mustJSON(summary.TopSenders),
 		RecipientsJSON:  mustJSON(summary.TopRecipients),
 		WarningsJSON:    mustJSON(summary.ParseWarnings),
-		InferenceJSON:   mustJSON(summary.Inference),
 	}
 
 	directory := filepath.Dir(outputPath)
@@ -132,7 +130,6 @@ func htmlTemplate() *template.Template {
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
 <section id="recipients" class="panel"><h2>Top recipients</h2><div id="recipientTable"></div></section>
 </div>
-<section class="panel"><h2>Identity inference</h2><div id="inference"></div></section>
 <section class="panel"><h2>Parse warnings</h2><div id="warnings"></div></section>
 </main>
 <script>
@@ -141,8 +138,6 @@ const yearly={{.YearlyJSON}};
 const senders={{.SendersJSON}};
 const recipients={{.RecipientsJSON}};
 const warnings={{.WarningsJSON}};
-const inference={{.InferenceJSON}};
-
 // drawChart renders a dependency-free SVG chart for all browsers and print output.
 function drawChart(container, rows, labelKey) {
  if(!rows.length){container.textContent='No data.';return}
@@ -199,7 +194,6 @@ document.getElementById('weeklyTable').innerHTML=periodTable(weekly);
 document.getElementById('yearlyTable').innerHTML=periodTable(yearly);
 document.getElementById('senderTable').innerHTML=rankTable(senders);
 document.getElementById('recipientTable').innerHTML=rankTable(recipients);
-document.getElementById('inference').innerHTML='<p><strong>Address:</strong> '+escapeText(inference.Address||'(not inferred)')+'</p><p><strong>Confidence:</strong> '+(inference.Confident?'Confident':'Ambiguous')+'</p><p><strong>Folder evidence:</strong> '+inference.FolderEvidence+' · <strong>Sent frequency:</strong> '+inference.Frequency+'</p><p><strong>Candidates:</strong> '+((inference.Candidates||[]).map(escapeText).join(', ')||'none')+'</p>';
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');
