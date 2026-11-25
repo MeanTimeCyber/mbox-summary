@@ -1,0 +1,8 @@
+# Generated reports
+*.html
+
+# Mailbox exports
+*.mbox
+
+# Binary file
+mbox-summary
