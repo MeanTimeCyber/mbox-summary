@@ -24,6 +24,9 @@ type pageData struct {
 	SendersJSON     template.JS
 	RecipientsJSON  template.JS
 	WarningsJSON    template.JS
+	SourcesJSON     template.JS
+	DedupeJSON      template.JS
+	FolderStatsJSON template.JS
 }
 
 // WriteFile writes a complete, self-contained HTML report to outputPath.
@@ -40,6 +43,9 @@ func WriteFile(outputPath string, summary model.Summary) error {
 		SendersJSON:     mustJSON(summary.TopSenders),
 		RecipientsJSON:  mustJSON(summary.TopRecipients),
 		WarningsJSON:    mustJSON(summary.ParseWarnings),
+		SourcesJSON:     mustJSON(summary.Sources),
+		DedupeJSON:      mustJSON(summary.Dedupe),
+		FolderStatsJSON: mustJSON(summary.FolderStats),
 	}
 
 	directory := filepath.Dir(outputPath)
@@ -118,7 +124,7 @@ func htmlTemplate() *template.Template {
 <body><main>
 <h1>{{.Title}}</h1>
 <p>Cutoff: {{.Cutoff}} · Generated: {{.GeneratedAt}}</p>
-<nav><a href="#weekly">Weekly</a> · <a href="#yearly">Yearly</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
+<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
 <section class="cards">
 <div class="card">Messages<strong>{{.MessageCount}}</strong></div>
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
@@ -126,6 +132,7 @@ func htmlTemplate() *template.Template {
 </section>
 <section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
 <section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
+<section id="sources" class="panel"><h2>Source folders and files</h2><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></section>
 <div class="split">
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
 <section id="recipients" class="panel"><h2>Top recipients</h2><div id="recipientTable"></div></section>
@@ -138,6 +145,9 @@ const yearly={{.YearlyJSON}};
 const senders={{.SendersJSON}};
 const recipients={{.RecipientsJSON}};
 const warnings={{.WarningsJSON}};
+const sources={{.SourcesJSON}};
+const dedupe={{.DedupeJSON}};
+const folderStats={{.FolderStatsJSON}};
 // drawChart renders a dependency-free SVG chart for all browsers and print output.
 function drawChart(container, rows, labelKey) {
  if(!rows.length){container.textContent='No data.';return}
@@ -189,11 +199,26 @@ function rankTable(rows){
  let html='<table><thead><tr><th>Name/address</th><th>Count</th><th>Share</th><th>Kind</th></tr></thead><tbody>';
  rows.forEach(r=>{let address=r.Name?escapeText(r.Name)+'<br><code>'+escapeText(r.Address)+'</code>':'<code>'+escapeText(r.Address)+'</code>';html+='<tr><td>'+address+'</td><td>'+r.Count+'</td><td>'+r.Percentage.toFixed(1)+'%</td><td>'+ (r.MailingList?' <span class="tag">Mailing list</span>':'Personal')+'</td></tr>'});return html+'</tbody></table>';
 }
+function sourceTable(rows){
+ if(!rows.length)return '<p>No source files.</p>';
+ let html='<table><thead><tr><th>Folder</th><th>File</th><th>Messages</th><th>Duplicates</th><th>Warnings</th></tr></thead><tbody>';
+ rows.forEach(r=>html+='<tr><td>'+escapeText(r.Folder)+'</td><td><code>'+escapeText(r.Path)+'</code></td><td>'+r.Messages+'</td><td>'+r.Duplicates+'</td><td>'+r.Warnings+'</td></tr>');
+ return html+'</tbody></table>';
+}
+function folderTable(rows){
+ if(!rows.length)return '';
+ let html='<h3>Folder totals</h3><table><thead><tr><th>Folder</th><th>Messages</th><th>Sent</th><th>Received</th></tr></thead><tbody>';
+ rows.forEach(r=>html+='<tr><td>'+escapeText(r.Folder)+'</td><td>'+r.Messages+'</td><td>'+r.Sent+'</td><td>'+r.Received+'</td></tr>');
+ return html+'</tbody></table>';
+}
 function escapeText(value){const el=document.createElement('span');el.textContent=value==null?'':String(value);return el.innerHTML}
 document.getElementById('weeklyTable').innerHTML=periodTable(weekly);
 document.getElementById('yearlyTable').innerHTML=periodTable(yearly);
 document.getElementById('senderTable').innerHTML=rankTable(senders);
 document.getElementById('recipientTable').innerHTML=rankTable(recipients);
+document.getElementById('sourceTable').innerHTML=sourceTable(sources);
+document.getElementById('folderTable').innerHTML=folderTable(folderStats);
+document.getElementById('dedupeStats').innerHTML='<p><strong>Unique messages:</strong> '+dedupe.UniqueMessages+' · <strong>Duplicate records:</strong> '+dedupe.DuplicateRecords+' · <strong>Message-ID keys:</strong> '+dedupe.MessageIDKeys+' · <strong>Fallback keys:</strong> '+dedupe.FallbackKeys+'</p>';
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');

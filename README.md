@@ -2,6 +2,9 @@
 
 `mbox-summary` parses an RFC 5322 mbox export and creates a standalone HTML report containing weekly email volume for the latest 104 ISO weeks, yearly volume for older mail, top sender rankings, and top recipient rankings.
 
+> [!CAUTION]
+> Built entirely using GitHub Copilot. As sensibly as possible, of course, but it's still clanker-built.
+
 ## Requirements
 
 - Go 1.22 or newer
@@ -53,6 +56,30 @@ Available flags:
 | `--timeout` | `0` (disabled) | Maximum parsing duration, for example `30m` or `2h` |
 | `--progress` | `true` | Show byte-based parsing progress on stderr |
 | `--workers` | up to 4 | Number of parallel RFC 5322 header-parsing workers |
+| `--folder` | Inferred | Folder mapping in `Folder=path` form; repeat for multiple exports |
+
+## Directory exports
+
+Pass a Thunderbird export directory as `--input`:
+
+```bash
+./mbox-summary \
+  --input /path/to/Thunderbird/exports \
+  --output summary.html \
+  --identity owner@example.com
+```
+
+Directory discovery recursively includes `.mbox` and `.mbx` files and extensionless files whose first line is a valid Unix mbox separator. This supports Firefox/Thunderbird exports named only `Inbox`, `Sent`, or `Drafts`. Folder roles are inferred from file names and parent directories. Override ambiguous exports with repeatable mappings:
+
+```bash
+./mbox-summary \
+  --input /exports \
+  --folder Sent=/exports/Sent \
+  --folder Inbox=/exports/Inbox \
+  --output summary.html
+```
+
+Cross-folder duplicates are removed using `Message-ID`. Messages without one use a stable SHA-256 fallback derived from date, sender, recipients, and subject. Deduplication is stored in a temporary disk-backed index. Sent exports are processed first for deterministic sent-folder precedence.
 
 To run directly through the Makefile:
 

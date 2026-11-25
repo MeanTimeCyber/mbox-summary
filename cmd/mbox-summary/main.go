@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/meantimecyber/mbox-summary/internal/mbox"
+	"github.com/meantimecyber/mbox-summary/internal/model"
 	"github.com/meantimecyber/mbox-summary/internal/report"
 	"github.com/meantimecyber/mbox-summary/internal/stats"
 )
@@ -32,6 +33,31 @@ func (f *identityFlags) Set(value string) error {
 		return errors.New("identity cannot be empty")
 	}
 	*f = append(*f, value)
+	return nil
+}
+
+// folderFlags maps folder labels to export files or directories.
+type folderFlags map[string]string
+
+// String returns a stable list of folder mappings.
+func (f *folderFlags) String() string {
+	values := make([]string, 0, len(*f))
+	for folder, path := range *f {
+		values = append(values, folder+"="+path)
+	}
+	return strings.Join(values, ",")
+}
+
+// Set parses Folder=path mappings.
+func (f *folderFlags) Set(value string) error {
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return errors.New("folder mapping must use Folder=path")
+	}
+	if *f == nil {
+		*f = make(map[string]string)
+	}
+	(*f)[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	return nil
 }
 
@@ -58,6 +84,8 @@ func run(args []string) error {
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
+	var folders folderFlags
+	fs.Var(&folders, "folder", "folder mapping in Folder=path form (repeatable)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -81,15 +109,27 @@ func run(args []string) error {
 		cutoff = parsed
 	}
 
-	inputInfo, err := os.Stat(*input)
+	sources, err := mbox.Discover(*input, map[string]string(folders))
 	if err != nil {
-		return fmt.Errorf("stat input: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("input directory contains no .mbox or .mbx files")
+		}
+		if errors.Is(err, os.ErrInvalid) {
+			return errors.New("input is neither a supported mailbox file nor a directory")
+		}
+		return fmt.Errorf("discover input: %w", err)
 	}
-	if !inputInfo.Mode().IsRegular() {
-		return fmt.Errorf("input is not a regular file: %s", *input)
-	}
-	if outputInfo, err := os.Stat(*output); err == nil && os.SameFile(inputInfo, outputInfo) {
-		return errors.New("input and output paths refer to the same file")
+
+	var totalBytes int64
+	for _, source := range sources {
+		totalBytes += source.Size
+		outputInfo, statErr := os.Stat(*output)
+		if statErr == nil {
+			sourceInfo, sourceErr := os.Stat(source.Path)
+			if sourceErr == nil && os.SameFile(sourceInfo, outputInfo) {
+				return errors.New("input and output paths refer to the same file")
+			}
+		}
 	}
 
 	parseContext, stopSignal := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -104,7 +144,7 @@ func run(args []string) error {
 	progressOptions := func() mbox.ParseOptions {
 		return mbox.ParseOptions{
 			Context:    parseContext,
-			TotalBytes: inputInfo.Size(),
+			TotalBytes: totalBytes,
 			Workers:    *workers,
 			Progress: func(p mbox.ParseProgress) {
 				if !*showProgress {
@@ -130,30 +170,46 @@ func run(args []string) error {
 		}
 	}
 
-	firstPassFile, err := os.Open(*input)
-	if err != nil {
-		return fmt.Errorf("open input for identity pass: %w", err)
-	}
 	analyzer := mbox.NewIdentityAnalyzer()
-	firstOptions := progressOptions()
-	firstOptions.DiscardMessages = true
-	firstOptions.MessageHandler = analyzer.Observe
-	firstResult, err := mbox.ParseWithOptions(firstPassFile, firstOptions)
-	closeErr := firstPassFile.Close()
-	if *showProgress {
-		fmt.Fprintln(os.Stderr)
-	}
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
+	sourceCoverage := make([]model.SourceCoverage, 0, len(sources))
+	allFirstWarnings := make([]model.ParseWarning, 0)
+	byteOffset := int64(0)
+	for _, source := range sources {
+		firstPassFile, err := os.Open(source.Path)
+		if err != nil {
+			return fmt.Errorf("open input %s: %w", source.Path, err)
 		}
-		if errors.Is(err, context.Canceled) {
-			return errors.New("mailbox parsing canceled")
+		firstOptions := progressOptions()
+		firstOptions.ByteOffset = byteOffset
+		firstOptions.DiscardMessages = true
+		firstOptions.SourceFolder = source.Folder
+		firstOptions.SourceFile = source.Path
+		firstOptions.MessageHandler = analyzer.Observe
+		firstResult, err := mbox.ParseWithOptions(firstPassFile, firstOptions)
+		closeErr := firstPassFile.Close()
+		if err == nil && closeErr != nil {
+			err = fmt.Errorf("close input %s: %w", source.Path, closeErr)
 		}
-		return fmt.Errorf("parse mailbox: %w", err)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close input after identity pass: %w", closeErr)
+		sourceCoverage = append(sourceCoverage, model.SourceCoverage{
+			Path:     source.Path,
+			Folder:   string(source.Folder),
+			Messages: firstResult.ParsedCount,
+			Warnings: len(firstResult.Warnings),
+		})
+		allFirstWarnings = append(allFirstWarnings, firstResult.Warnings...)
+		if *showProgress {
+			fmt.Fprintln(os.Stderr)
+		}
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
+			}
+			if errors.Is(err, context.Canceled) {
+				return errors.New("mailbox parsing canceled")
+			}
+			return fmt.Errorf("parse mailbox %s: %w", source.Path, err)
+		}
+		byteOffset += source.Size
 	}
 	if analyzer.Count() == 0 {
 		return errors.New("input contains no parseable emails")
@@ -177,35 +233,72 @@ func run(args []string) error {
 		}
 	}
 
-	secondPassFile, err := os.Open(*input)
-	if err != nil {
-		return fmt.Errorf("open input for aggregation pass: %w", err)
-	}
 	accumulator := stats.NewAccumulator(ownerIdentities, cutoff, *top)
-	secondOptions := progressOptions()
-	secondOptions.DiscardMessages = true
-	secondOptions.MessageHandler = accumulator.Observe
-	secondResult, err := mbox.ParseWithOptions(secondPassFile, secondOptions)
-	closeErr = secondPassFile.Close()
-	if *showProgress {
-		fmt.Fprintln(os.Stderr)
-	}
+	dedupe, err := mbox.OpenDedupeIndex()
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
-		}
-		if errors.Is(err, context.Canceled) {
-			return errors.New("mailbox parsing canceled")
-		}
-		return fmt.Errorf("parse mailbox for aggregation: %w", err)
+		return fmt.Errorf("create deduplication index: %w", err)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close input after aggregation pass: %w", closeErr)
+	defer dedupe.Close()
+
+	allSecondWarnings := make([]model.ParseWarning, 0)
+	byteOffset = 0
+	for sourceIndex, source := range sources {
+		secondPassFile, err := os.Open(source.Path)
+		if err != nil {
+			return fmt.Errorf("open input for aggregation %s: %w", source.Path, err)
+		}
+		secondOptions := progressOptions()
+		secondOptions.ByteOffset = byteOffset
+		secondOptions.DiscardMessages = true
+		secondOptions.SourceFolder = source.Folder
+		secondOptions.SourceFile = source.Path
+		duplicatesBefore := dedupe.DuplicateRecords
+		var dedupeErr error
+		secondOptions.MessageHandler = func(message mbox.Message) {
+			unique, err := dedupe.Add(message)
+			if err != nil {
+				dedupeErr = err
+				return
+			}
+			if err == nil && unique {
+				accumulator.Observe(message)
+			}
+		}
+		secondResult, err := mbox.ParseWithOptions(secondPassFile, secondOptions)
+		closeErr := secondPassFile.Close()
+		if err == nil && closeErr != nil {
+			err = fmt.Errorf("close input %s: %w", source.Path, closeErr)
+		}
+		sourceCoverage[sourceIndex].Duplicates = dedupe.DuplicateRecords - duplicatesBefore
+		allSecondWarnings = append(allSecondWarnings, secondResult.Warnings...)
+		if dedupeErr != nil {
+			return fmt.Errorf("update deduplication index for %s: %w", source.Path, dedupeErr)
+		}
+		if *showProgress {
+			fmt.Fprintln(os.Stderr)
+		}
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
+			}
+			if errors.Is(err, context.Canceled) {
+				return errors.New("mailbox parsing canceled")
+			}
+			return fmt.Errorf("parse mailbox for aggregation %s: %w", source.Path, err)
+		}
+		byteOffset += source.Size
 	}
 
 	summary := accumulator.Summary()
-	summary.ParseWarnings = append(firstResult.Warnings, secondResult.Warnings...)
+	summary.ParseWarnings = append(allFirstWarnings, allSecondWarnings...)
 	summary.Inference = inferred
+	summary.Sources = sourceCoverage
+	summary.Dedupe = model.DedupeStats{
+		UniqueMessages:   dedupe.UniqueMessages,
+		DuplicateRecords: dedupe.DuplicateRecords,
+		MessageIDKeys:    dedupe.MessageIDKeys,
+		FallbackKeys:     dedupe.FallbackKeys,
+	}
 
 	if err := report.WriteFile(*output, summary); err != nil {
 		return fmt.Errorf("write HTML report: %w", err)

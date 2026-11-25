@@ -23,6 +23,10 @@ func TestWriteFileProducesStandaloneReport(t *testing.T) {
 		Weekly:          []model.PeriodStats{{Period: "2026-W47", Sent: 3, Received: 5}},
 		Yearly:          []model.PeriodStats{{Period: "2024", Sent: 12, Received: 20}},
 		TopSenders:      []model.RankEntry{{Address: "sender@example.net", Count: 7, Percentage: 100}},
+		Sources: []model.SourceCoverage{{
+			Path: "Sent.mbox", Folder: "Sent", Messages: 10, Duplicates: 2,
+		}},
+		Dedupe: model.DedupeStats{UniqueMessages: 8, DuplicateRecords: 2},
 	}
 
 	if err := report.WriteFile(output, summary); err != nil {
@@ -33,7 +37,7 @@ func TestWriteFileProducesStandaloneReport(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	html := string(data)
-	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<div id=\"weeklyChart\"", "function drawChart", "<svg"} {
+	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<div id=\"weeklyChart\"", "function drawChart", "<svg", "Source folders and files", "Sent.mbox"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("HTML missing %q", expected)
 		}

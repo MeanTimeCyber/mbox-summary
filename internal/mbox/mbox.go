@@ -21,6 +21,8 @@ import (
 type Message struct {
 	Date          time.Time
 	DateValid     bool
+	MessageID     string
+	Subject       string
 	From          Address
 	To            []Address
 	Cc            []Address
@@ -29,6 +31,8 @@ type Message struct {
 	ListDomains   []string
 	ListAddresses []Address
 	SentFolder    bool
+	Folder        FolderRole
+	SourceFile    string
 }
 
 // Address contains a normalized email address and display name.
@@ -39,8 +43,9 @@ type Address struct {
 
 // ParseResult contains successfully parsed messages and non-fatal warnings.
 type ParseResult struct {
-	Messages []Message
-	Warnings []model.ParseWarning
+	Messages    []Message
+	Warnings    []model.ParseWarning
+	ParsedCount int
 }
 
 // ParseProgress reports streaming parser progress and byte throughput position.
@@ -61,6 +66,9 @@ type ParseOptions struct {
 	MessageHandler  func(Message)
 	Workers         int
 	MaxHeaderBytes  int64
+	ByteOffset      int64
+	SourceFolder    FolderRole
+	SourceFile      string
 }
 
 // countingReader records bytes consumed while emersion/go-mbox streams a mailbox.
@@ -146,6 +154,11 @@ func processHeaderResult(result *ParseResult, parsedCount *int, options ParseOpt
 			Text:         "message is missing a valid Date header",
 		})
 	}
+	value.Message.Folder = options.SourceFolder
+	value.Message.SourceFile = options.SourceFile
+	if value.Message.Folder == FolderSent {
+		value.Message.SentFolder = true
+	}
 	if options.MessageHandler != nil {
 		options.MessageHandler(value.Message)
 	}
@@ -153,6 +166,7 @@ func processHeaderResult(result *ParseResult, parsedCount *int, options ParseOpt
 		result.Messages = append(result.Messages, value.Message)
 	}
 	(*parsedCount)++
+	result.ParsedCount = *parsedCount
 	reportProgress(options, bytesRead, value.Index, *parsedCount, len(result.Warnings))
 }
 
@@ -206,7 +220,7 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 		maxHeaderBytes = 1024 * 1024
 	}
 
-	counted := &countingReader{reader: r}
+	counted := &countingReader{reader: r, bytesRead: options.ByteOffset}
 	reader := emersion.NewReader(counted)
 	parsedCount := 0
 	jobs := make(chan headerJob, workers*2)
@@ -313,6 +327,7 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 		}
 	}
 
+	result.ParsedCount = parsedCount
 	return result, nil
 }
 
@@ -340,9 +355,11 @@ func parseRecord(r io.Reader) (Message, error) {
 	}
 
 	message := Message{
-		To:  parseAddressHeader(parsed.Header, "To"),
-		Cc:  parseAddressHeader(parsed.Header, "Cc"),
-		Bcc: parseAddressHeader(parsed.Header, "Bcc"),
+		MessageID: strings.ToLower(strings.Trim(strings.TrimSpace(parsed.Header.Get("Message-ID")), "<>")),
+		Subject:   strings.TrimSpace(parsed.Header.Get("Subject")),
+		To:        parseAddressHeader(parsed.Header, "To"),
+		Cc:        parseAddressHeader(parsed.Header, "Cc"),
+		Bcc:       parseAddressHeader(parsed.Header, "Bcc"),
 		ListHeaders: map[string]bool{
 			"List-Id":          parsed.Header.Get("List-Id") != "",
 			"List-Post":        parsed.Header.Get("List-Post") != "",

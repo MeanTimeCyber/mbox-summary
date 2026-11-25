@@ -34,6 +34,7 @@ type Accumulator struct {
 	recipientCounts map[string]int
 	recipientNames  map[string]string
 	recipientLists  map[string]bool
+	folderStats     map[string]*model.FolderStats
 }
 
 // NewAccumulator creates a bounded-memory mailbox accumulator.
@@ -50,6 +51,7 @@ func NewAccumulator(identities []string, cutoff time.Time, top int) *Accumulator
 		recipientCounts: make(map[string]int),
 		recipientNames:  make(map[string]string),
 		recipientLists:  make(map[string]bool),
+		folderStats:     make(map[string]*model.FolderStats),
 	}
 }
 
@@ -64,13 +66,29 @@ func (a *Accumulator) Observe(message mbox.Message) {
 	if date.After(a.cutoff) {
 		return
 	}
-	sent := a.owners[message.From.Address]
+	sent := a.owners[message.From.Address] || message.Folder == mbox.FolderSent || message.SentFolder
 	receivedAddresses := uniqueAddresses(message.To, message.Cc, message.Bcc)
 	received := false
 	for _, address := range receivedAddresses {
 		if a.owners[address.Address] {
 			received = true
 			break
+		}
+		folderName := string(message.Folder)
+		if folderName == "" {
+			folderName = "Unknown"
+		}
+		folderEntry := a.folderStats[folderName]
+		if folderEntry == nil {
+			folderEntry = &model.FolderStats{Folder: folderName}
+			a.folderStats[folderName] = folderEntry
+		}
+		folderEntry.Messages++
+		if sent {
+			folderEntry.Sent++
+		}
+		if received {
+			folderEntry.Received++
 		}
 	}
 
@@ -123,6 +141,14 @@ func (a *Accumulator) Summary() model.Summary {
 		Yearly:          orderedYearly(a.yearlyMap),
 		TopSenders:      buildRanking(a.senderCounts, a.senderNames, a.senderLists, a.top),
 		TopRecipients:   buildRanking(a.recipientCounts, a.recipientNames, a.recipientLists, a.top),
+	}
+	folderNames := make([]string, 0, len(a.folderStats))
+	for folderName := range a.folderStats {
+		folderNames = append(folderNames, folderName)
+	}
+	sort.Strings(folderNames)
+	for _, folderName := range folderNames {
+		summary.FolderStats = append(summary.FolderStats, *a.folderStats[folderName])
 	}
 	return summary
 }

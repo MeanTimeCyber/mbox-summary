@@ -34,6 +34,31 @@ type IdentityInference struct {
 	Candidates     []string
 }
 
+// SourceCoverage describes one mailbox file discovered for a directory input.
+type SourceCoverage struct {
+	Path       string
+	Folder     string
+	Messages   int
+	Warnings   int
+	Duplicates int
+}
+
+// DedupeStats summarizes cross-folder duplicate removal.
+type DedupeStats struct {
+	UniqueMessages   int
+	DuplicateRecords int
+	MessageIDKeys    int
+	FallbackKeys     int
+}
+
+// FolderStats contains sent and received totals for one export folder role.
+type FolderStats struct {
+	Folder   string
+	Sent     int
+	Received int
+	Messages int
+}
+
 // Summary is the complete HTML report data model.
 type Summary struct {
 	GeneratedAt     time.Time
@@ -46,4 +71,7 @@ type Summary struct {
 	ParseWarnings   []ParseWarning
 	Inference       IdentityInference
 	OwnerIdentities []string
+	Sources         []SourceCoverage
+	Dedupe          DedupeStats
+	FolderStats     []FolderStats
 }

@@ -8,12 +8,12 @@ import (
 	"testing"
 )
 
-// TestRunRejectsDirectoryInput verifies that input validation does not accept directories.
-func TestRunRejectsDirectoryInput(t *testing.T) {
+// TestRunRejectsEmptyDirectory verifies that directory input discovery requires mailbox exports.
+func TestRunRejectsEmptyDirectory(t *testing.T) {
 	directory := t.TempDir()
 	err := run([]string{"--input", directory, "--identity", "owner@example.com"})
-	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("run() error = %v, want regular-file validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "contains no .mbox") {
+		t.Fatalf("run() error = %v, want empty-directory discovery error", err)
 	}
 }
 
