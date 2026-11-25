@@ -4,6 +4,9 @@
 # Mailbox exports
 *.mbox
 *.db
+*.sqlite
+*.wal
+*.shm
 
 # Binary file
 mbox-summary
