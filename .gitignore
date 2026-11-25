@@ -3,6 +3,7 @@
 
 # Mailbox exports
 *.mbox
+*.db
 
 # Binary file
 mbox-summary
