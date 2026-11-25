@@ -75,17 +75,19 @@ type ParseProgress struct {
 
 // ParseOptions configures cancellation and progress reporting for a mailbox parse.
 type ParseOptions struct {
-	Context            context.Context
-	Progress           func(ParseProgress)
-	TotalBytes         int64
-	DiscardMessages    bool
-	MessageHandler     func(Message)
-	Workers            int
-	MaxHeaderBytes     int64
-	ByteOffset         int64
-	SourceFolder       FolderRole
-	SourceFile         string
-	ExtractAttachments bool
+	Context                 context.Context
+	Progress                func(ParseProgress)
+	TotalBytes              int64
+	DiscardMessages         bool
+	MessageHandler          func(Message)
+	Workers                 int
+	MaxHeaderBytes          int64
+	ByteOffset              int64
+	SourceFolder            FolderRole
+	SourceFile              string
+	ExtractAttachments      bool
+	ExtractAttachmentData   bool
+	MetadataOnlyAttachments bool
 }
 
 // countingReader records bytes consumed while emersion/go-mbox streams a mailbox.
@@ -103,9 +105,10 @@ func (r *countingReader) Read(p []byte) (int, error) {
 
 // headerJob contains a bounded header block for worker-thread parsing.
 type headerJob struct {
-	Index  int
-	Header []byte
-	Full   []byte
+	Index                 int
+	Header                []byte
+	Full                  []byte
+	IncludeAttachmentData bool
 }
 
 // headerResult contains the parsed metadata or an extraction error for one record.
@@ -253,7 +256,7 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 				var message Message
 				var err error
 				if job.Full != nil {
-					message, err = parseRecordWithAttachments(bytes.NewReader(job.Full))
+					message, err = parseRecordWithAttachments(bytes.NewReader(job.Full), job.IncludeAttachmentData)
 				} else {
 					message, err = parseRecord(bytes.NewReader(job.Header))
 				}
@@ -340,7 +343,11 @@ func ParseWithOptions(r io.Reader, options ParseOptions) (ParseResult, error) {
 			if err != nil {
 				headerErr = err
 			} else {
-				job = headerJob{Index: index, Full: full}
+				job = headerJob{
+					Index:                 index,
+					Full:                  full,
+					IncludeAttachmentData: options.ExtractAttachmentData || !options.MetadataOnlyAttachments,
+				}
 			}
 		} else {
 			header, err := extractHeaders(record, maxHeaderBytes)
@@ -422,7 +429,7 @@ func parseRecord(r io.Reader) (Message, error) {
 }
 
 // parseRecordWithAttachments parses metadata and decodes attachment payloads.
-func parseRecordWithAttachments(r io.Reader) (Message, error) {
+func parseRecordWithAttachments(r io.Reader, includeData bool) (Message, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return Message{}, err
@@ -435,7 +442,7 @@ func parseRecordWithAttachments(r io.Reader) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	message.Attachments, err = extractAttachments(parsed)
+	message.Attachments, err = extractAttachments(parsed, includeData)
 	if err != nil {
 		return Message{}, err
 	}
@@ -443,7 +450,7 @@ func parseRecordWithAttachments(r io.Reader) (Message, error) {
 }
 
 // extractAttachments walks multipart MIME parts and decodes attachment payloads.
-func extractAttachments(message *mail.Message) ([]Attachment, error) {
+func extractAttachments(message *mail.Message, includeData bool) ([]Attachment, error) {
 	contentType := message.Header.Get("Content-Type")
 	if contentType == "" {
 		return nil, nil
@@ -456,11 +463,11 @@ func extractAttachments(message *mail.Message) ([]Attachment, error) {
 		return nil, nil
 	}
 	reader := multipart.NewReader(message.Body, params["boundary"])
-	return extractMultipartAttachments(reader)
+	return extractMultipartAttachments(reader, includeData)
 }
 
 // extractMultipartAttachments recursively scans nested MIME multipart payloads.
-func extractMultipartAttachments(reader *multipart.Reader) ([]Attachment, error) {
+func extractMultipartAttachments(reader *multipart.Reader, includeData bool) ([]Attachment, error) {
 	result := make([]Attachment, 0)
 	for {
 		part, err := reader.NextPart()
@@ -473,7 +480,7 @@ func extractMultipartAttachments(reader *multipart.Reader) ([]Attachment, error)
 		contentType := part.Header.Get("Content-Type")
 		mediaType, params, parseErr := mime.ParseMediaType(contentType)
 		if parseErr == nil && strings.HasPrefix(mediaType, "multipart/") {
-			nested, nestedErr := extractMultipartAttachments(multipart.NewReader(part, params["boundary"]))
+			nested, nestedErr := extractMultipartAttachments(multipart.NewReader(part, params["boundary"]), includeData)
 			if nestedErr != nil {
 				return nil, nestedErr
 			}
@@ -497,14 +504,24 @@ func extractMultipartAttachments(reader *multipart.Reader) ([]Attachment, error)
 		}
 
 		decoded := decodeTransfer(part, part.Header.Get("Content-Transfer-Encoding"))
-		data, readErr := io.ReadAll(decoded)
-		if readErr != nil {
-			return nil, readErr
+		var data []byte
+		var size int64
+		if includeData {
+			data, err = io.ReadAll(decoded)
+			if err != nil {
+				return nil, err
+			}
+			size = int64(len(data))
+		} else {
+			size, err = io.Copy(io.Discard, decoded)
+			if err != nil {
+				return nil, err
+			}
 		}
 		result = append(result, Attachment{
 			Name:        filepath.Base(filename),
 			ContentType: mediaType,
-			Size:        int64(len(data)),
+			Size:        size,
 			Data:        data,
 		})
 	}

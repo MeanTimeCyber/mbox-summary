@@ -33,10 +33,18 @@ type ExportedAttachment struct {
 
 // Store owns an append/upsert SQLite database.
 type Store struct {
-	db         *sql.DB
-	tx         *sql.Tx
-	runID      string
-	batchCount int
+	db              *sql.DB
+	tx              *sql.Tx
+	runID           string
+	batchCount      int
+	batchSize       int
+	sourceIDs       map[string]string
+	emailStmt       *sql.Stmt
+	recipientDelete *sql.Stmt
+	recipientStmt   *sql.Stmt
+	threadStmt      *sql.Stmt
+	emailThreadStmt *sql.Stmt
+	attachmentStmt  *sql.Stmt
 }
 
 // Open creates or opens a SQLite database and initializes the schema.
@@ -58,8 +66,28 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	store := &Store{db: db}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA cache_size=-65536"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA temp_store=MEMORY"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA mmap_size=268435456"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	store := &Store{db: db, batchSize: 5000, sourceIDs: make(map[string]string)}
 	if err := store.createSchema(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := store.prepareStatements(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -70,6 +98,24 @@ func Open(path string) (*Store, error) {
 func (store *Store) Close() error {
 	if store == nil {
 		return nil
+	}
+	if store.emailStmt != nil {
+		store.emailStmt.Close()
+	}
+	if store.recipientDelete != nil {
+		store.recipientDelete.Close()
+	}
+	if store.recipientStmt != nil {
+		store.recipientStmt.Close()
+	}
+	if store.threadStmt != nil {
+		store.threadStmt.Close()
+	}
+	if store.emailThreadStmt != nil {
+		store.emailThreadStmt.Close()
+	}
+	if store.attachmentStmt != nil {
+		store.attachmentStmt.Close()
 	}
 	return store.db.Close()
 }
@@ -235,6 +281,63 @@ CREATE TABLE IF NOT EXISTS attachment_type_rankings (
 	return nil
 }
 
+// prepareStatements prepares the high-frequency email write statements once.
+func (store *Store) prepareStatements() error {
+	var err error
+	store.emailStmt, err = store.db.Prepare(`
+INSERT INTO emails(email_id,message_id,fallback_key,date_utc,subject,sender_address,sender_name,
+ folder,sent,received,mailing_list,subject_normalized,source_id,first_seen_run,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(email_id) DO UPDATE SET
+ message_id=excluded.message_id, fallback_key=excluded.fallback_key, date_utc=excluded.date_utc,
+ subject=excluded.subject, sender_address=excluded.sender_address, sender_name=excluded.sender_name,
+ folder=excluded.folder, sent=MAX(emails.sent,excluded.sent),
+ received=MAX(emails.received,excluded.received),
+ mailing_list=MAX(emails.mailing_list,excluded.mailing_list),
+ subject_normalized=excluded.subject_normalized, source_id=emails.source_id,
+ updated_at=excluded.updated_at`)
+	if err != nil {
+		return err
+	}
+	store.recipientDelete, err = store.db.Prepare("DELETE FROM email_recipients WHERE email_id=?")
+	if err != nil {
+		return err
+	}
+	store.recipientStmt, err = store.db.Prepare(`
+INSERT INTO email_recipients(email_id,recipient_type,address_normalized,display_name)
+VALUES(?,?,?,?)
+ON CONFLICT(email_id,recipient_type,address_normalized) DO UPDATE SET display_name=excluded.display_name`)
+	if err != nil {
+		return err
+	}
+	store.threadStmt, err = store.db.Prepare(`
+INSERT INTO threads(thread_id,subject,first_seen,last_seen,mailing_list,message_count)
+VALUES(?,?,?,?,?,1)
+ON CONFLICT(thread_id) DO UPDATE SET
+ subject=CASE WHEN threads.subject='' THEN excluded.subject ELSE threads.subject END,
+ first_seen=CASE WHEN threads.first_seen='' OR excluded.first_seen<threads.first_seen THEN excluded.first_seen ELSE threads.first_seen END,
+ last_seen=CASE WHEN threads.last_seen='' OR excluded.last_seen>threads.last_seen THEN excluded.last_seen ELSE threads.last_seen END,
+ mailing_list=MAX(threads.mailing_list,excluded.mailing_list),
+ message_count=threads.message_count+1`)
+	if err != nil {
+		return err
+	}
+	store.emailThreadStmt, err = store.db.Prepare(`
+INSERT INTO email_threads(email_id,thread_id,run_id) VALUES(?,?,?)
+ON CONFLICT(email_id,thread_id,run_id) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	store.attachmentStmt, err = store.db.Prepare(`
+INSERT INTO attachments(attachment_id,email_id,filename,content_type,extension,size_bytes,sha256,export_path)
+VALUES(?,?,?,?,?,?,?,?)
+ON CONFLICT(attachment_id) DO UPDATE SET
+ filename=excluded.filename, content_type=excluded.content_type,
+ extension=excluded.extension, size_bytes=excluded.size_bytes,
+ sha256=excluded.sha256, export_path=excluded.export_path`)
+	return err
+}
+
 // UUID returns a timestamp-bearing random run identifier.
 func uuid() string {
 	bytes := make([]byte, 16)
@@ -305,12 +408,21 @@ func (store *Store) RollbackBatch() error {
 // maybeCommitBatch commits after 1000 writes.
 func (store *Store) maybeCommitBatch() error {
 	store.batchCount++
-	if store.batchCount >= 1000 {
+	if store.batchCount >= store.batchSize {
 		return store.CommitBatch()
 	}
 	if store.tx == nil {
 		return store.beginBatch()
 	}
+	return nil
+}
+
+// SetBatchSize changes the number of email writes per SQLite transaction.
+func (store *Store) SetBatchSize(size int) error {
+	if size < 100 || size > 100000 {
+		return fmt.Errorf("SQLite batch size must be between 100 and 100000")
+	}
+	store.batchSize = size
 	return nil
 }
 
@@ -341,6 +453,7 @@ func (store *Store) UpsertSource(source mbox.SourceFile, messageCount, warningCo
 	if err != nil {
 		return err
 	}
+	store.sourceIDs[source.Path] = sourceID
 	if err := store.beginBatch(); err != nil {
 		return err
 	}
@@ -419,9 +532,14 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 		message.ListHeaders["List-Post"] ||
 		message.ListHeaders["List-Unsubscribe"]
 	threadKey, normalizedSubject := normalizeThreadKey(message)
-	sourceID, _, err := SourceFingerprint(source.Path)
-	if err != nil {
-		return err
+	sourceID := store.sourceIDs[source.Path]
+	if sourceID == "" {
+		var err error
+		sourceID, _, err = SourceFingerprint(source.Path)
+		if err != nil {
+			return err
+		}
+		store.sourceIDs[source.Path] = sourceID
 	}
 	if err := store.beginBatch(); err != nil {
 		return err
@@ -430,25 +548,11 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 	if message.DateValid {
 		dateUTC = message.Date.UTC().Format(time.RFC3339)
 	}
-	if _, err := store.tx.Exec(`
-INSERT INTO emails(email_id,message_id,fallback_key,date_utc,subject,sender_address,sender_name,
- folder,sent,received,mailing_list,subject_normalized,source_id,first_seen_run,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(email_id) DO UPDATE SET
- message_id=excluded.message_id, fallback_key=excluded.fallback_key, date_utc=excluded.date_utc,
- subject=excluded.subject, sender_address=excluded.sender_address, sender_name=excluded.sender_name,
- folder=excluded.folder, sent=MAX(emails.sent,excluded.sent),
- received=MAX(emails.received,excluded.received),
- mailing_list=MAX(emails.mailing_list,excluded.mailing_list),
- subject_normalized=excluded.subject_normalized, source_id=emails.source_id,
- updated_at=excluded.updated_at`,
+	if _, err := store.tx.Stmt(store.emailStmt).Exec(
 		emailKey, optionalMessageID(message.MessageID), emailKey,
 		dateUTC, message.Subject, message.From.Address, message.From.Name,
 		string(message.Folder), boolInt(sent), boolInt(received), boolInt(mailingList),
 		normalizedSubject, sourceID, store.runID, now); err != nil {
-		return err
-	}
-	if _, err := store.tx.Exec("DELETE FROM email_recipients WHERE email_id=?", emailKey); err != nil {
 		return err
 	}
 	for _, recipient := range recipients {
@@ -459,28 +563,16 @@ ON CONFLICT(email_id) DO UPDATE SET
 		if containsAddress(message.Bcc, recipient.Address) {
 			recipientType = "bcc"
 		}
-		if _, err := store.tx.Exec(`
-INSERT INTO email_recipients(email_id,recipient_type,address_normalized,display_name)
-VALUES(?,?,?,?)
-ON CONFLICT(email_id,recipient_type,address_normalized) DO UPDATE SET display_name=excluded.display_name`,
+		if _, err := store.tx.Stmt(store.recipientStmt).Exec(
 			emailKey, recipientType, recipient.Address, recipient.Name); err != nil {
 			return err
 		}
 	}
-	if _, err := store.tx.Exec(`
-INSERT INTO threads(thread_id,subject,first_seen,last_seen,mailing_list,message_count)
-VALUES(?,?,?,?,?,1)
-ON CONFLICT(thread_id) DO UPDATE SET
- subject=CASE WHEN threads.subject='' THEN excluded.subject ELSE threads.subject END,
- first_seen=CASE WHEN threads.first_seen='' OR excluded.first_seen<threads.first_seen THEN excluded.first_seen ELSE threads.first_seen END,
- last_seen=CASE WHEN threads.last_seen='' OR excluded.last_seen>threads.last_seen THEN excluded.last_seen ELSE threads.last_seen END,
- mailing_list=MAX(threads.mailing_list,excluded.mailing_list)`,
+	if _, err := store.tx.Stmt(store.threadStmt).Exec(
 		threadKey, message.Subject, dateUTC, dateUTC, boolInt(mailingList)); err != nil {
 		return err
 	}
-	if _, err := store.tx.Exec(`
-INSERT INTO email_threads(email_id,thread_id,run_id) VALUES(?,?,?)
-ON CONFLICT(email_id,thread_id,run_id) DO NOTHING`,
+	if _, err := store.tx.Stmt(store.emailThreadStmt).Exec(
 		emailKey, threadKey, store.runID); err != nil {
 		return err
 	}
@@ -491,13 +583,7 @@ ON CONFLICT(email_id,thread_id,run_id) DO NOTHING`,
 			attachmentSHA = hex.EncodeToString(fallback[:])
 		}
 		attachmentID := fmt.Sprintf("%s:%03d", emailKey, attachment.Index)
-		if _, err := store.tx.Exec(`
-INSERT INTO attachments(attachment_id,email_id,filename,content_type,extension,size_bytes,sha256,export_path)
-VALUES(?,?,?,?,?,?,?,?)
-ON CONFLICT(attachment_id) DO UPDATE SET
- filename=excluded.filename, content_type=excluded.content_type,
- extension=excluded.extension, size_bytes=excluded.size_bytes,
- sha256=excluded.sha256, export_path=excluded.export_path`,
+		if _, err := store.tx.Stmt(store.attachmentStmt).Exec(
 			attachmentID, emailKey, attachment.Name, attachment.ContentType,
 			strings.TrimPrefix(strings.ToLower(filepath.Ext(attachment.Name)), "."),
 			attachment.Size, attachmentSHA, attachment.ExportPath); err != nil {

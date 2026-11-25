@@ -84,6 +84,7 @@ func run(args []string) error {
 	workers := fs.Int("workers", min(runtime.GOMAXPROCS(0), 4), "number of header-parsing workers")
 	attachmentsDir := fs.String("attachments-dir", "", "optional folder where unique message attachments are exported")
 	sqlitePath := fs.String("sqlite", "", "optional SQLite metadata database path")
+	sqliteBatch := fs.Int("sqlite-batch", 5000, "email writes per SQLite transaction")
 
 	var identities identityFlags
 	fs.Var(&identities, "identity", "personal email address (repeatable)")
@@ -101,6 +102,9 @@ func run(args []string) error {
 	}
 	if *workers < 1 {
 		return errors.New("--workers must be at least 1")
+	}
+	if *sqliteBatch < 100 || *sqliteBatch > 100000 {
+		return errors.New("--sqlite-batch must be between 100 and 100000")
 	}
 
 	var cutoff time.Time
@@ -251,6 +255,10 @@ func run(args []string) error {
 			return fmt.Errorf("open SQLite database: %w", err)
 		}
 		defer sqliteStore.Close()
+		if err := sqliteStore.SetBatchSize(*sqliteBatch); err != nil {
+			sqliteStore.Close()
+			return err
+		}
 		owners := make([]string, 0, len(ownerIdentities))
 		for _, owner := range ownerIdentities {
 			owner = strings.ToLower(strings.TrimSpace(owner))
@@ -298,7 +306,9 @@ func run(args []string) error {
 		secondOptions.DiscardMessages = true
 		secondOptions.SourceFolder = source.Folder
 		secondOptions.SourceFile = source.Path
-		secondOptions.ExtractAttachments = true
+		secondOptions.ExtractAttachments = sqliteStore != nil || *attachmentsDir != ""
+		secondOptions.ExtractAttachmentData = *attachmentsDir != ""
+		secondOptions.MetadataOnlyAttachments = sqliteStore != nil && *attachmentsDir == ""
 		duplicatesBefore := dedupe.DuplicateRecords
 		var dedupeErr error
 		secondOptions.MessageHandler = func(message mbox.Message) {

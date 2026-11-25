@@ -58,6 +58,7 @@ Available flags:
 | `--workers` | up to 4 | Number of parallel RFC 5322 header-parsing workers |
 | `--attachments-dir` | Disabled | Export unique attachment payloads into this folder |
 | `--sqlite` | Disabled | Append metadata-only email records to a SQLite database |
+| `--sqlite-batch` | `5000` | Email writes per SQLite transaction (100–100000) |
 
 ## Attachments
 
