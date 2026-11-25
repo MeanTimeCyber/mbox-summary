@@ -35,6 +35,22 @@ type Accumulator struct {
 	recipientNames  map[string]string
 	recipientLists  map[string]bool
 	folderStats     map[string]*model.FolderStats
+	threadNodes     map[string]*threadNode
+	threadRefs      map[string]string
+	threadSubjects  map[string]string
+}
+
+// threadNode is a union-find node for one in-window conversation root.
+type threadNode struct {
+	Parent          string
+	Subject         string
+	Participants    map[string]string
+	MailingList     bool
+	MessageCount    int
+	FirstSeen       time.Time
+	LastSeen        time.Time
+	WeeklyTimeline  map[string]int
+	MonthlyTimeline map[string]int
 }
 
 // NewAccumulator creates a bounded-memory mailbox accumulator.
@@ -52,6 +68,9 @@ func NewAccumulator(identities []string, cutoff time.Time, top int) *Accumulator
 		recipientNames:  make(map[string]string),
 		recipientLists:  make(map[string]bool),
 		folderStats:     make(map[string]*model.FolderStats),
+		threadNodes:     make(map[string]*threadNode),
+		threadRefs:      make(map[string]string),
+		threadSubjects:  make(map[string]string),
 	}
 }
 
@@ -113,6 +132,14 @@ func (a *Accumulator) Observe(message mbox.Message) {
 		}
 	}
 
+	// Build in-window conversation threads only. Thread records remain
+	// bounded by the 104-week reporting window and do not retain message bodies.
+	if date.Before(weekStart(a.cutoff).AddDate(0, 0, -103*7)) {
+		// Older messages are excluded from conversation timelines.
+	} else {
+		a.observeThread(message, date)
+	}
+
 	if !sent && message.From.Address != "" {
 		a.senderCounts[message.From.Address]++
 		a.senderNames[message.From.Address] = preferName(a.senderNames[message.From.Address], message.From.Name)
@@ -128,6 +155,202 @@ func (a *Accumulator) Observe(message mbox.Message) {
 		a.recipientLists[address.Address] = a.recipientLists[address.Address] ||
 			isMailingListAddress(message, address.Address)
 	}
+}
+
+// normalizeSubject removes reply and forward prefixes for subject-based grouping.
+func normalizeSubject(subject string) string {
+	value := strings.ToLower(strings.TrimSpace(subject))
+	for {
+		value = strings.TrimSpace(value)
+		changed := false
+		for _, prefix := range []string{"re:", "fwd:", "fw:"} {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimSpace(value[len(prefix):])
+				changed = true
+			}
+		}
+		if len(value) >= 2 && value[0] == '[' {
+			if end := strings.Index(value, "]"); end > 0 {
+				value = strings.TrimSpace(value[end+1:])
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "re" || value == "fwd" || value == "fw" {
+		return ""
+	}
+	return value
+}
+
+// newThreadNode creates a union-find node and initializes thread metadata.
+func newThreadNode(id, subject string) *threadNode {
+	return &threadNode{
+		Parent:          id,
+		Subject:         subject,
+		Participants:    make(map[string]string),
+		WeeklyTimeline:  make(map[string]int),
+		MonthlyTimeline: make(map[string]int),
+	}
+}
+
+// findThread resolves a thread union-find root with path compression.
+func (a *Accumulator) findThread(id string) string {
+	node := a.threadNodes[id]
+	if node == nil {
+		return id
+	}
+	if node.Parent != id {
+		node.Parent = a.findThread(node.Parent)
+	}
+	return node.Parent
+}
+
+// unionThreads merges two conversation roots and retains the earliest stable root.
+func (a *Accumulator) unionThreads(left, right string) string {
+	left = a.findThread(left)
+	right = a.findThread(right)
+	if left == right {
+		return left
+	}
+	if left > right {
+		left, right = right, left
+	}
+	leftNode := a.threadNodes[left]
+	rightNode := a.threadNodes[right]
+	if leftNode == nil {
+		leftNode = newThreadNode(left, "")
+		a.threadNodes[left] = leftNode
+	}
+	if rightNode != nil {
+		leftNode.MessageCount += rightNode.MessageCount
+		leftNode.MailingList = leftNode.MailingList || rightNode.MailingList
+		for address, name := range rightNode.Participants {
+			if _, exists := leftNode.Participants[address]; !exists {
+				leftNode.Participants[address] = name
+			}
+		}
+		for period, count := range rightNode.WeeklyTimeline {
+			leftNode.WeeklyTimeline[period] += count
+		}
+		for period, count := range rightNode.MonthlyTimeline {
+			leftNode.MonthlyTimeline[period] += count
+		}
+		if leftNode.FirstSeen.IsZero() || (!rightNode.FirstSeen.IsZero() && rightNode.FirstSeen.Before(leftNode.FirstSeen)) {
+			leftNode.FirstSeen = rightNode.FirstSeen
+		}
+		if rightNode.LastSeen.After(leftNode.LastSeen) {
+			leftNode.LastSeen = rightNode.LastSeen
+		}
+		if leftNode.Subject == "" {
+			leftNode.Subject = rightNode.Subject
+		}
+		rightNode.Parent = left
+	}
+	a.threadNodes[right].Parent = left
+	return left
+}
+
+// observeThread assigns one in-window message to an ID or subject conversation.
+func (a *Accumulator) observeThread(message mbox.Message, date time.Time) {
+	ids := append(append([]string{}, message.References...), message.InReplyTo...)
+	if message.MessageID != "" {
+		ids = append(ids, message.MessageID)
+	}
+
+	roots := make([]string, 0)
+	for _, id := range ids {
+		id = strings.ToLower(strings.Trim(strings.TrimSpace(id), "<>,"))
+		if id == "" {
+			continue
+		}
+		root, exists := a.threadRefs[id]
+		if !exists {
+			root = id
+			a.threadNodes[root] = newThreadNode(root, normalizeSubject(message.Subject))
+			a.threadRefs[id] = root
+		}
+		roots = append(roots, a.findThread(root))
+	}
+
+	subject := normalizeSubject(message.Subject)
+	if len(roots) == 0 && subject != "" {
+		root, exists := a.threadSubjects[subject]
+		if !exists {
+			root = "subject:" + subject
+			a.threadNodes[root] = newThreadNode(root, subject)
+			a.threadSubjects[subject] = root
+		}
+		roots = append(roots, a.findThread(root))
+	}
+
+	// A message with neither a thread ID nor usable subject gets one stable node.
+	if len(roots) == 0 {
+		root := "subject:" + message.MessageID
+		if root == "subject:" {
+			root = fmt.Sprintf("message:%d", a.messageCount)
+		}
+		a.threadNodes[root] = newThreadNode(root, strings.TrimSpace(message.Subject))
+		roots = append(roots, root)
+	}
+
+	root := roots[0]
+	for _, candidate := range roots[1:] {
+		root = a.unionThreads(root, candidate)
+	}
+	if subject != "" {
+		if subjectRoot, exists := a.threadSubjects[subject]; exists {
+			root = a.unionThreads(root, subjectRoot)
+		} else {
+			a.threadSubjects[subject] = root
+		}
+	}
+	for _, id := range ids {
+		id = strings.ToLower(strings.Trim(strings.TrimSpace(id), "<>,"))
+		if id != "" {
+			a.threadRefs[id] = root
+		}
+	}
+	root = a.findThread(root)
+	node := a.threadNodes[root]
+	if node == nil {
+		node = newThreadNode(root, subject)
+		a.threadNodes[root] = node
+	}
+	if strings.TrimSpace(message.Subject) != "" &&
+		(node.Subject == "" ||
+			strings.EqualFold(normalizeSubject(node.Subject), normalizeSubject(message.Subject))) {
+		node.Subject = strings.TrimSpace(message.Subject)
+	}
+	node.MessageCount++
+	if node.FirstSeen.IsZero() || date.Before(node.FirstSeen) {
+		node.FirstSeen = date
+	}
+	if date.After(node.LastSeen) {
+		node.LastSeen = date
+	}
+	node.MailingList = node.MailingList || isMailingList(message)
+
+	addresses := make([]mbox.Address, 0)
+	if message.From.Address != "" {
+		addresses = append(addresses, message.From)
+	}
+	addresses = append(addresses, uniqueAddresses(message.To, message.Cc, message.Bcc)...)
+	for _, address := range addresses {
+		if address.Address == "" || a.owners[address.Address] {
+			continue
+		}
+		if _, exists := node.Participants[address.Address]; !exists {
+			node.Participants[address.Address] = address.Name
+		}
+	}
+
+	year, week := date.ISOWeek()
+	node.WeeklyTimeline[fmt.Sprintf("%04d-W%02d", year, week)]++
+	node.MonthlyTimeline[date.Format("2006-01")]++
 }
 
 // Summary returns a completed report model from the accumulated maps.
@@ -150,7 +373,69 @@ func (a *Accumulator) Summary() model.Summary {
 	for _, folderName := range folderNames {
 		summary.FolderStats = append(summary.FolderStats, *a.folderStats[folderName])
 	}
+	summary.TopThreads = a.buildTopThreads(20)
 	return summary
+}
+
+// buildTopThreads ranks conversation nodes by distinct message count and builds timelines.
+func (a *Accumulator) buildTopThreads(limit int) []model.ConversationThread {
+	roots := make(map[string]*threadNode)
+	for id := range a.threadNodes {
+		root := a.findThread(id)
+		rootNode := roots[root]
+		if rootNode == nil {
+			rootNode = a.threadNodes[root]
+		}
+		if rootNode != nil {
+			roots[root] = rootNode
+		}
+	}
+
+	result := make([]model.ConversationThread, 0, len(roots))
+	for id, node := range roots {
+		if node == nil || node.MessageCount == 0 {
+			continue
+		}
+		participantNames := make([]model.ThreadParticipant, 0, len(node.Participants))
+		for address, name := range node.Participants {
+			participantNames = append(participantNames, model.ThreadParticipant{Address: address, Name: name})
+		}
+		sort.Slice(participantNames, func(i, j int) bool {
+			return participantNames[i].Address < participantNames[j].Address
+		})
+		participantCount := len(participantNames)
+		if len(participantNames) > 10 {
+			participantNames = participantNames[:10]
+		}
+
+		result = append(result, model.ConversationThread{
+			ID:               id,
+			Subject:          node.Subject,
+			Participants:     participantNames,
+			ParticipantCount: participantCount,
+			MessageCount:     node.MessageCount,
+			FirstSeen:        node.FirstSeen,
+			LastSeen:         node.LastSeen,
+			MailingList:      node.MailingList,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].MessageCount != result[j].MessageCount {
+			return result[i].MessageCount > result[j].MessageCount
+		}
+		if !result[i].LastSeen.Equal(result[j].LastSeen) {
+			return result[i].LastSeen.After(result[j].LastSeen)
+		}
+		if result[i].ParticipantCount != result[j].ParticipantCount {
+			return result[i].ParticipantCount > result[j].ParticipantCount
+		}
+		return result[i].ID < result[j].ID
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
 }
 
 // normalizedIdentitySet creates a lower-case exact-address identity set.

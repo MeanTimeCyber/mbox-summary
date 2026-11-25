@@ -59,6 +59,24 @@ type FolderStats struct {
 	Messages int
 }
 
+// ThreadParticipant identifies one non-owner address in a conversation thread.
+type ThreadParticipant struct {
+	Address string
+	Name    string
+}
+
+// ConversationThread describes a ranked email conversation.
+type ConversationThread struct {
+	ID               string
+	Subject          string
+	Participants     []ThreadParticipant
+	ParticipantCount int
+	MessageCount     int
+	FirstSeen        time.Time
+	LastSeen         time.Time
+	MailingList      bool
+}
+
 // Summary is the complete HTML report data model.
 type Summary struct {
 	GeneratedAt     time.Time
@@ -74,4 +92,5 @@ type Summary struct {
 	Sources         []SourceCoverage
 	Dedupe          DedupeStats
 	FolderStats     []FolderStats
+	TopThreads      []ConversationThread
 }

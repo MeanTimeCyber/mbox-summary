@@ -103,6 +103,7 @@ Common consumer-provider domains are maintained in the implementation as weak hi
 - Older mail is grouped by UTC calendar year.
 - Mailing lists are identified by `List-Id`, `List-Post`, or `List-Unsubscribe`.
 - Individual malformed messages produce warnings and do not prevent the remaining messages from being reported.
+- The report ranks the top 20 in-window conversation threads using References/In-Reply-To IDs and normalized subject fallback.
 
 ## Large exports
 

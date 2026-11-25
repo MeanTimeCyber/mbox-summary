@@ -23,6 +23,8 @@ type Message struct {
 	DateValid     bool
 	MessageID     string
 	Subject       string
+	References    []string
+	InReplyTo     []string
 	From          Address
 	To            []Address
 	Cc            []Address
@@ -355,11 +357,13 @@ func parseRecord(r io.Reader) (Message, error) {
 	}
 
 	message := Message{
-		MessageID: strings.ToLower(strings.Trim(strings.TrimSpace(parsed.Header.Get("Message-ID")), "<>")),
-		Subject:   strings.TrimSpace(parsed.Header.Get("Subject")),
-		To:        parseAddressHeader(parsed.Header, "To"),
-		Cc:        parseAddressHeader(parsed.Header, "Cc"),
-		Bcc:       parseAddressHeader(parsed.Header, "Bcc"),
+		MessageID:  strings.ToLower(strings.Trim(strings.TrimSpace(parsed.Header.Get("Message-ID")), "<>")),
+		Subject:    strings.TrimSpace(parsed.Header.Get("Subject")),
+		References: parseMessageIDList(parsed.Header.Get("References")),
+		InReplyTo:  parseMessageIDList(parsed.Header.Get("In-Reply-To")),
+		To:         parseAddressHeader(parsed.Header, "To"),
+		Cc:         parseAddressHeader(parsed.Header, "Cc"),
+		Bcc:        parseAddressHeader(parsed.Header, "Bcc"),
 		ListHeaders: map[string]bool{
 			"List-Id":          parsed.Header.Get("List-Id") != "",
 			"List-Post":        parsed.Header.Get("List-Post") != "",
@@ -390,6 +394,22 @@ func firstAddress(value string) Address {
 		return Address{}
 	}
 	return normalizeAddress(addresses[0])
+}
+
+// parseMessageIDList extracts and normalizes message IDs from reply/thread headers.
+func parseMessageIDList(value string) []string {
+	fields := strings.Fields(value)
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(fields))
+	for _, field := range fields {
+		id := strings.ToLower(strings.Trim(strings.TrimSpace(field), "<>,"))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	return result
 }
 
 // parseAddressHeader parses, deduplicates, and normalizes one address header.

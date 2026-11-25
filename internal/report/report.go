@@ -27,6 +27,7 @@ type pageData struct {
 	SourcesJSON     template.JS
 	DedupeJSON      template.JS
 	FolderStatsJSON template.JS
+	ThreadsJSON     template.JS
 }
 
 // WriteFile writes a complete, self-contained HTML report to outputPath.
@@ -46,6 +47,7 @@ func WriteFile(outputPath string, summary model.Summary) error {
 		SourcesJSON:     mustJSON(summary.Sources),
 		DedupeJSON:      mustJSON(summary.Dedupe),
 		FolderStatsJSON: mustJSON(summary.FolderStats),
+		ThreadsJSON:     mustJSON(summary.TopThreads),
 	}
 
 	directory := filepath.Dir(outputPath)
@@ -118,13 +120,13 @@ func htmlTemplate() *template.Template {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px}.chart{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px;overflow-x:auto}.chart svg{display:block;min-width:640px;width:100%;height:300px}.chart text{font:11px system-ui,sans-serif;fill:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card{break-inside:avoid}}
+:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}.table-wrap{width:100%;max-width:100%;overflow-x:auto}.table-wrap table{border-collapse:collapse;width:100%;min-width:760px}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px;vertical-align:top}.thread-participants{max-width:280px;overflow-wrap:anywhere}.chart{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px;overflow-x:auto}.chart svg{display:block;min-width:640px;width:100%;height:300px}.chart text{font:11px system-ui,sans-serif;fill:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card{break-inside:avoid}.table-wrap{overflow:visible}}
 </style>
 </head>
 <body><main>
 <h1>{{.Title}}</h1>
 <p>Cutoff: {{.Cutoff}} · Generated: {{.GeneratedAt}}</p>
-<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
+<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#threads">Threads</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
 <section class="cards">
 <div class="card">Messages<strong>{{.MessageCount}}</strong></div>
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
@@ -132,6 +134,7 @@ func htmlTemplate() *template.Template {
 </section>
 <section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
 <section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
+<section id="threads" class="panel"><h2>Top 20 conversation threads</h2><div id="threadTable"></div></section>
 <section id="sources" class="panel"><h2>Source folders and files</h2><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></section>
 <div class="split">
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
@@ -148,6 +151,7 @@ const warnings={{.WarningsJSON}};
 const sources={{.SourcesJSON}};
 const dedupe={{.DedupeJSON}};
 const folderStats={{.FolderStatsJSON}};
+const threads={{.ThreadsJSON}};
 // drawChart renders a dependency-free SVG chart for all browsers and print output.
 function drawChart(container, rows, labelKey) {
  if(!rows.length){container.textContent='No data.';return}
@@ -211,6 +215,17 @@ function folderTable(rows){
  rows.forEach(r=>html+='<tr><td>'+escapeText(r.Folder)+'</td><td>'+r.Messages+'</td><td>'+r.Sent+'</td><td>'+r.Received+'</td></tr>');
  return html+'</tbody></table>';
 }
+function threadTable(rows){
+ if(!rows.length)return '<p>No in-window conversation threads.</p>';
+ let html='<div class="table-wrap"><table><thead><tr><th>Rank</th><th>Conversation</th><th>Messages</th><th>Participants</th><th>First message</th><th>Last message</th></tr></thead><tbody>';
+ rows.forEach((r,index)=>{
+  let subject=r.Subject?escapeText(r.Subject):'(No subject)';
+  let participants=(r.Participants||[]).map(p=>p.Name?escapeText(p.Name)+' &lt;'+escapeText(p.Address)+'&gt;':'<code>'+escapeText(p.Address)+'</code>').join(', ');
+  if(r.ParticipantCount>(r.Participants||[]).length) participants+=(participants?' · ':'')+'+'+(r.ParticipantCount-r.Participants.length)+' more';
+  html+='<tr><td>'+ (index+1)+'</td><td><strong>'+subject+'</strong>'+(r.MailingList?' <span class="tag">Mailing list</span>':'')+'</td><td>'+r.MessageCount+'</td><td class="thread-participants">'+participants+'</td><td>'+escapeText((r.FirstSeen||'').slice(0,10))+'</td><td>'+escapeText((r.LastSeen||'').slice(0,10))+'</td></tr>';
+ });
+ return html+'</tbody></table></div>';
+}
 function escapeText(value){const el=document.createElement('span');el.textContent=value==null?'':String(value);return el.innerHTML}
 document.getElementById('weeklyTable').innerHTML=periodTable(weekly);
 document.getElementById('yearlyTable').innerHTML=periodTable(yearly);
@@ -219,6 +234,7 @@ document.getElementById('recipientTable').innerHTML=rankTable(recipients);
 document.getElementById('sourceTable').innerHTML=sourceTable(sources);
 document.getElementById('folderTable').innerHTML=folderTable(folderStats);
 document.getElementById('dedupeStats').innerHTML='<p><strong>Unique messages:</strong> '+dedupe.UniqueMessages+' · <strong>Duplicate records:</strong> '+dedupe.DuplicateRecords+' · <strong>Message-ID keys:</strong> '+dedupe.MessageIDKeys+' · <strong>Fallback keys:</strong> '+dedupe.FallbackKeys+'</p>';
+document.getElementById('threadTable').innerHTML=threadTable(threads);
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');

@@ -124,6 +124,28 @@ func TestParseWithOptionsDiscardsMessages(t *testing.T) {
 	}
 }
 
+// TestParseExtractsThreadHeaders verifies References and In-Reply-To extraction.
+func TestParseExtractsThreadHeaders(t *testing.T) {
+	input := "From sender@example.net Mon Nov 24 10:00:00 2025\n" +
+		"Message-ID: <child@example.net>\n" +
+		"References: <root@example.net> <parent@example.net>\n" +
+		"In-Reply-To: <parent@example.net>\n" +
+		"From: Sender <sender@example.net>\n" +
+		"Date: Mon, 24 Nov 2025 10:00:00 +0000\n\nBody\n"
+
+	result, err := mbox.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("Parse() message count = %d, want 1", len(result.Messages))
+	}
+	message := result.Messages[0]
+	if len(message.References) != 2 || len(message.InReplyTo) != 1 {
+		t.Errorf("thread headers = references %#v, reply %#v", message.References, message.InReplyTo)
+	}
+}
+
 // TestParseWithOptionsWorkers verifies that bounded parallel header parsing preserves results.
 func TestParseWithOptionsWorkers(t *testing.T) {
 	input := "From owner@example.com Mon Nov 24 10:00:00 2025\n" +

@@ -129,3 +129,47 @@ func TestSummarizeSeparatesMailingListRecipient(t *testing.T) {
 		t.Errorf("mailing-list separation team/personal = %v/%v, want true/true", teamFound, personalFound)
 	}
 }
+
+// TestSummarizeBuildsTopConversationThreads verifies ID grouping and participant exclusion.
+func TestSummarizeBuildsTopConversationThreads(t *testing.T) {
+	cutoff := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	messages := []mbox.Message{
+		{
+			Date:       cutoff.AddDate(0, 0, -14),
+			Subject:    "Re: Project update",
+			MessageID:  "<one@example.com>",
+			References: []string{"<root@example.com>"},
+			From:       mbox.Address{Address: "owner@example.com", Name: "Owner"},
+			To:         []mbox.Address{{Address: "friend@example.net", Name: "Friend"}},
+		},
+		{
+			Date:      cutoff.AddDate(0, 0, -7),
+			Subject:   "Re: Project update",
+			MessageID: "<two@example.com>",
+			InReplyTo: []string{"<root@example.com>"},
+			From:      mbox.Address{Address: "friend@example.net", Name: "Friend"},
+			To:        []mbox.Address{{Address: "owner@example.com", Name: "Owner"}},
+			Cc:        []mbox.Address{{Address: "third@example.org", Name: "Third"}},
+		},
+	}
+
+	summary := stats.Summarize(messages, []string{"owner@example.com"}, cutoff, 50)
+	if len(summary.TopThreads) != 1 {
+		t.Fatalf("top thread count = %d, want 1", len(summary.TopThreads))
+	}
+	thread := summary.TopThreads[0]
+	if thread.MessageCount != 2 {
+		t.Errorf("thread message count = %d, want 2", thread.MessageCount)
+	}
+	if thread.FirstSeen.IsZero() || thread.LastSeen.IsZero() {
+		t.Errorf("thread dates = %v / %v, want both populated", thread.FirstSeen, thread.LastSeen)
+	}
+	if thread.ParticipantCount != 2 {
+		t.Errorf("thread participant count = %d, want 2", thread.ParticipantCount)
+	}
+	for _, participant := range thread.Participants {
+		if participant.Address == "owner@example.com" {
+			t.Error("thread participants include the mailbox owner")
+		}
+	}
+}
