@@ -99,6 +99,9 @@ func mustJSON(value any) template.JS {
 	if err != nil {
 		return template.JS("[]")
 	}
+	if string(data) == "null" {
+		return template.JS("[]")
+	}
 	return template.JS(data)
 }
 
@@ -111,7 +114,7 @@ func htmlTemplate() *template.Template {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px}canvas{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card{break-inside:avoid}}
+:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px}.chart{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px;overflow-x:auto}.chart svg{display:block;min-width:640px;width:100%;height:300px}.chart text{font:11px system-ui,sans-serif;fill:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card{break-inside:avoid}}
 </style>
 </head>
 <body><main>
@@ -123,8 +126,8 @@ func htmlTemplate() *template.Template {
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
 <div class="card">Parse warnings<strong>{{.WarningCount}}</strong></div>
 </section>
-<section id="weekly" class="panel"><h2>Weekly volume</h2><canvas id="weeklyChart"></canvas><div id="weeklyTable"></div></section>
-<section id="yearly" class="panel"><h2>Yearly volume</h2><canvas id="yearlyChart"></canvas><div id="yearlyTable"></div></section>
+<section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
+<section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
 <div class="split">
 <section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
 <section id="recipients" class="panel"><h2>Top recipients</h2><div id="recipientTable"></div></section>
@@ -140,22 +143,46 @@ const recipients={{.RecipientsJSON}};
 const warnings={{.WarningsJSON}};
 const inference={{.InferenceJSON}};
 
-function drawChart(canvas, rows, labelKey) {
- const ctx=canvas.getContext('2d'); const dpr=window.devicePixelRatio||1;
- const rect=canvas.getBoundingClientRect(); canvas.width=rect.width*dpr; canvas.height=300*dpr; ctx.scale(dpr,dpr);
- ctx.clearRect(0,0,rect.width,300); if(!rows.length)return;
+// drawChart renders a dependency-free SVG chart for all browsers and print output.
+function drawChart(container, rows, labelKey) {
+ if(!rows.length){container.textContent='No data.';return}
  const max=Math.max(1,...rows.map(r=>Math.max(r.Sent,r.Received)));
- const left=42,right=10,top=12,bottom=28,w=rect.width-left-right,h=270;
- ctx.strokeStyle='#98a2b3';ctx.beginPath();ctx.moveTo(left,top);ctx.lineTo(left,top+h);ctx.lineTo(left+w,top+h);ctx.stroke();
- function line(key,color){
-  ctx.strokeStyle=color;ctx.beginPath();
-  rows.forEach((r,i)=>{const x=left+(rows.length===1?0:i*w/(rows.length-1));const y=top+h-r[key]/max*h;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y)});
-  ctx.stroke();
+ const width=960,height=300,left=48,right=12,top=18,bottom=36;
+ const plotWidth=width-left-right,plotHeight=height-top-bottom;
+ const x=index=>left+(rows.length===1?plotWidth/2:index*plotWidth/(rows.length-1));
+ const y=value=>top+plotHeight-(value/max)*plotHeight;
+
+ let svg='<svg viewBox="0 0 '+width+' '+height+'" preserveAspectRatio="xMidYMid meet" aria-label="'+escapeText(labelKey)+' sent and received volume">';
+ svg+='<rect x="0" y="0" width="'+width+'" height="'+height+'" fill="none" stroke="#d0d5dd"/>';
+ svg+='<g stroke="#e4e7ec" stroke-width="1">';
+ for(let step=0;step<=4;step++){
+  const yGrid=top+plotHeight*step/4;
+  const gridValue=Math.round(max*(4-step)/4);
+  svg+='<line x1="'+left+'" y1="'+yGrid+'" x2="'+(width-right)+'" y2="'+yGrid+'"/>';
+  svg+='<text x="'+(left-8)+'" y="'+(yGrid+4)+'" text-anchor="end">'+gridValue+'</text>';
  }
- line('Sent','#2563eb');line('Received','#16a34a');
- ctx.fillStyle='#667085';ctx.font='11px system-ui';
- if(rows.length<=12){rows.forEach((r,i)=>{const x=left+(rows.length===1?0:i*w/(rows.length-1));ctx.fillText(r[labelKey],x-12,295)});}
- ctx.fillText('Sent: blue',left,8);ctx.fillStyle='#16a34a';ctx.fillText('Received: green',left+70,8);
+ svg+='</g>';
+ for(const series of [{key:'Sent',color:'#2563eb'},{key:'Received',color:'#16a34a'}]){
+  let points=[];
+  rows.forEach((r,index)=>points.push(x(index)+','+y(r[series.key])));
+  svg+='<polyline fill="none" stroke="'+series.color+'" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="'+points.join(' ')+'"/>';
+  rows.forEach((r,index)=>{
+   const cx=x(index),cy=y(r[series.key]);
+   svg+='<circle cx="'+cx+'" cy="'+cy+'" r="3" fill="'+series.color+'"><title>'+escapeText(r[labelKey])+': '+r[series.key]+' '+series.key.toLowerCase()+'</title></circle>';
+  });
+ }
+ const labelCount=rows.length<=12?rows.length:12;
+ for(let i=0;i<labelCount;i++){
+  const rowIndex=labelCount===1?0:Math.round(i*(rows.length-1)/(labelCount-1));
+  const row=rows[rowIndex];
+  svg+='<text x="'+x(rowIndex)+'" y="'+(height-12)+'" text-anchor="middle">'+escapeText(row[labelKey])+'</text>';
+ }
+ svg+='<line x1="'+left+'" y1="'+(top-4)+'" x2="'+(left+14)+'" y2="'+(top-4)+'" stroke="#2563eb" stroke-width="3"/>';
+ svg+='<text x="'+(left+18)+'" y="'+(top)+'">Sent</text>';
+ svg+='<line x1="'+(left+88)+'" y1="'+(top-4)+'" x2="'+(left+102)+'" y2="'+(top-4)+'" stroke="#16a34a" stroke-width="3"/>';
+ svg+='<text x="'+(left+106)+'" y="'+(top)+'">Received</text>';
+ svg+='</svg>';
+ container.innerHTML=svg;
 }
 function periodTable(rows){
  if(!rows.length)return '<p>No data.</p>';
@@ -176,7 +203,6 @@ document.getElementById('inference').innerHTML='<p><strong>Address:</strong> '+e
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');
-window.addEventListener('resize',()=>{drawChart(document.getElementById('weeklyChart'),weekly,'Period');drawChart(document.getElementById('yearlyChart'),yearly,'Period')});
 </script>
 </body></html>`))
 }

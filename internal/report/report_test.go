@@ -33,7 +33,7 @@ func TestWriteFileProducesStandaloneReport(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	html := string(data)
-	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<canvas"} {
+	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<div id=\"weeklyChart\"", "function drawChart", "<svg"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("HTML missing %q", expected)
 		}

@@ -10,8 +10,18 @@
 ## Build
 
 ```bash
-go mod tidy
-go build -o mbox-summary ./cmd/mbox-summary
+make build
+```
+
+Other useful local targets:
+
+```bash
+make tidy   # Update Go module dependencies
+make fmt    # Format Go source
+make test   # Run the test suite
+make race   # Run tests with the race detector
+make vet    # Run Go vet
+make clean  # Remove the compiled binary
 ```
 
 ## Usage
@@ -44,6 +54,12 @@ Available flags:
 | `--progress` | `true` | Show byte-based parsing progress on stderr |
 | `--workers` | up to 4 | Number of parallel RFC 5322 header-parsing workers |
 
+To run directly through the Makefile:
+
+```bash
+make run INPUT=mailbox.mbox OUTPUT=summary.html IDENTITY=owner@example.com
+```
+
 ## Identity inference
 
 The tool first looks for sent-folder evidence such as Gmail labels or sent-folder headers. It then falls back to `From` address frequency. A top result is only accepted when folder evidence or frequency is clearly dominant. Ambiguous exports require an explicit identity.
@@ -65,4 +81,4 @@ Common consumer-provider domains are maintained in the implementation as weak hi
 
 The tool streams the mbox in two bounded-memory passes. The first pass infers the mailbox owner and latest date. The second pass aggregates weekly/yearly periods and address rankings. Parsed message records are not retained in memory. Ranking and period maps are bounded by the number of unique addresses and years/weeks present in the archive.
 
-Parsing is sequential because `emersion/go-mbox` owns the streaming separator reader and advancing it concurrently would duplicate or buffer complete messages. This is preferable for multi-gigabyte inputs: it keeps memory flat and avoids I/O/read-ahead contention. Use `--timeout 2h` for a hard parsing deadline and `--progress=false` to suppress stderr progress in scripted environments. Pressing Ctrl-C cancels both passes through Go context cancellation.
+The mbox stream is read sequentially because `emersion/go-mbox` owns separator detection. Extracted header blocks are processed by a bounded worker pool, while message bodies are discarded. This keeps memory flat and avoids I/O contention on multi-gigabyte inputs. Use `--timeout 2h` for a hard parsing deadline and `--progress=false` to suppress stderr progress in scripted environments. Pressing Ctrl-C cancels both passes through Go context cancellation.
