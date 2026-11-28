@@ -122,28 +122,42 @@ func htmlTemplate() *template.Template {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
 <style>
-:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}.table-wrap{width:100%;max-width:100%;overflow-x:auto}.table-wrap table{border-collapse:collapse;width:100%;min-width:760px}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px;vertical-align:top}.thread-participants{max-width:280px;overflow-wrap:anywhere}.chart{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px;overflow-x:auto}.chart svg{display:block;min-width:640px;width:100%;height:300px}.chart text{font:11px system-ui,sans-serif;fill:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card{break-inside:avoid}.table-wrap{overflow:visible}}
+:root{color-scheme:light dark;--bg:#f6f7fb;--panel:#fff;--text:#1d2433;--muted:#667085;--blue:#2563eb;--green:#16a34a}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{max-width:1200px;margin:auto;padding:24px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card,.panel{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:16px;margin:12px 0}.card strong{display:block;font-size:28px}.toc{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;padding:12px 16px;margin:12px 0}.toc ul{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0 0;padding-left:18px}.toc-actions{display:flex;gap:8px;margin-top:8px}.toc-actions button{border:1px solid #d0d5dd;border-radius:6px;background:var(--panel);color:var(--text);padding:6px 10px;cursor:pointer}.report-section{background:var(--panel);border:1px solid #d0d5dd;border-radius:10px;margin:12px 0}.report-section>summary{cursor:pointer;font-size:18px;font-weight:700;padding:14px 16px}.report-section>.section-body{padding:0 16px 16px}.table-wrap{width:100%;max-width:100%;overflow-x:auto}.table-wrap table{border-collapse:collapse;width:100%;min-width:760px}th,td{border-bottom:1px solid #e4e7ec;text-align:left;padding:8px;vertical-align:top}.thread-participants{max-width:280px;overflow-wrap:anywhere}.chart{width:100%;height:300px;border:1px solid #e4e7ec;border-radius:8px;overflow-x:auto}.chart svg{display:block;min-width:640px;width:100%;height:300px}.chart text{font:11px system-ui,sans-serif;fill:var(--muted)}.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}.tag{display:inline-block;border-radius:12px;padding:2px 8px;background:#e8eefc;color:#1d4ed8}.warning{color:#b42318}@media(max-width:800px){.split{grid-template-columns:1fr}}@media print{body{background:#fff}.panel,.card,.report-section{break-inside:avoid}.report-section:not([open])>.section-body{display:block}.table-wrap{overflow:visible}}
 </style>
 </head>
 <body><main>
 <h1>{{.Title}}</h1>
 <p>Cutoff: {{.Cutoff}} · Generated: {{.GeneratedAt}}</p>
-<nav><a href="#yearly">Yearly</a> · <a href="#weekly">Weekly</a> · <a href="#threads">Threads</a> · <a href="#attachments">Attachments</a> · <a href="#sources">Sources</a> · <a href="#senders">Senders</a> · <a href="#recipients">Recipients</a></nav>
+<nav class="toc" aria-label="Table of contents">
+<strong>Table of contents</strong>
+<ul>
+<li><a href="#yearly">Yearly volume</a></li>
+<li><a href="#weekly">Weekly volume</a></li>
+<li><a href="#threads">Top 20 conversation threads</a></li>
+<li><a href="#attachments">Sent attachments</a></li>
+<li><a href="#sources">Source folders and files</a></li>
+<li><a href="#senders">Top senders</a></li>
+<li><a href="#recipients">Top recipients</a></li>
+<li><a href="#warnings">Parse warnings</a></li>
+</ul>
+<div class="toc-actions">
+<button type="button" id="expandAll">Expand all</button>
+<button type="button" id="collapseAll">Collapse all</button>
+</div>
+</nav>
 <section class="cards">
 <div class="card">Messages<strong>{{.MessageCount}}</strong></div>
 <div class="card">Mailbox identities<strong style="font-size:16px">{{.OwnerIdentities}}</strong></div>
 <div class="card">Parse warnings<strong>{{.WarningCount}}</strong></div>
 </section>
-<section id="yearly" class="panel"><h2>Yearly volume</h2><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></section>
-<section id="weekly" class="panel"><h2>Weekly volume</h2><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></section>
-<section id="threads" class="panel"><h2>Top 20 conversation threads</h2><div id="threadTable"></div></section>
-<section id="attachments" class="panel"><h2>Sent attachments</h2><div id="attachmentTable"></div></section>
-<section id="sources" class="panel"><h2>Source folders and files</h2><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></section>
-<div class="split">
-<section id="senders" class="panel"><h2>Top senders</h2><div id="senderTable"></div></section>
-<section id="recipients" class="panel"><h2>Top recipients</h2><div id="recipientTable"></div></section>
-</div>
-<section class="panel"><h2>Parse warnings</h2><div id="warnings"></div></section>
+<details id="yearly" class="report-section" open><summary>Yearly volume</summary><div class="section-body"><div id="yearlyChart" class="chart" role="img" aria-label="Yearly sent and received email volume"></div><div id="yearlyTable"></div></div></details>
+<details id="weekly" class="report-section" open><summary>Weekly volume</summary><div class="section-body"><div id="weeklyChart" class="chart" role="img" aria-label="Weekly sent and received email volume"></div><div id="weeklyTable"></div></div></details>
+<details id="threads" class="report-section" open><summary>Top 20 conversation threads</summary><div class="section-body"><div id="threadTable"></div></div></details>
+<details id="attachments" class="report-section" open><summary>Sent attachments</summary><div class="section-body"><div id="attachmentTable"></div></div></details>
+<details id="sources" class="report-section" open><summary>Source folders and files</summary><div class="section-body"><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></div></details>
+<details id="senders" class="report-section" open><summary>Top senders</summary><div class="section-body"><div id="senderTable"></div></div></details>
+<details id="recipients" class="report-section" open><summary>Top recipients</summary><div class="section-body"><div id="recipientTable"></div></div></details>
+<details id="warnings" class="report-section" open><summary>Parse warnings</summary><div class="section-body"><div id="warnings"></div></div></details>
 </main>
 <script>
 const weekly={{.WeeklyJSON}};
@@ -256,6 +270,18 @@ document.getElementById('attachmentTable').innerHTML=attachmentTable(attachments
 document.getElementById('warnings').innerHTML=warnings.length?'<table><thead><tr><th>Record</th><th>Warning</th></tr></thead><tbody>'+warnings.map(w=>' <tr><td>'+w.MessageIndex+'</td><td class="warning">'+escapeText(w.Text)+'</td></tr>').join('')+'</tbody></table>':'<p>No parse warnings.</p>';
 drawChart(document.getElementById('weeklyChart'),weekly,'Period');
 drawChart(document.getElementById('yearlyChart'),yearly,'Period');
+document.getElementById('expandAll').addEventListener('click',function(){
+ document.querySelectorAll('details.report-section').forEach(function(section){section.open=true});
+});
+document.getElementById('collapseAll').addEventListener('click',function(){
+ document.querySelectorAll('details.report-section').forEach(function(section){section.open=false});
+});
+document.querySelectorAll('.toc a[href^="#"]').forEach(function(link){
+ link.addEventListener('click',function(){
+  const target=document.querySelector(link.getAttribute('href'));
+  if(target&&target.tagName==='DETAILS')target.open=true;
+ });
+});
 </script>
 </body></html>`))
 }
