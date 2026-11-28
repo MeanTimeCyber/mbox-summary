@@ -356,6 +356,10 @@ func run(args []string) error {
 	completedBytes = 0
 	exportedFiles := 0
 	exportedBytes := int64(0)
+	payloadRegistry := (*mbox.PayloadExportRegistry)(nil)
+	if *attachmentsDir != "" {
+		payloadRegistry = mbox.NewPayloadExportRegistry(*attachmentsDir)
+	}
 	for sourceIndex, source := range sources {
 		if sqliteStore != nil {
 			if err := sqliteStore.UpsertSource(source, sourceCoverage[sourceIndex].Messages, sourceCoverage[sourceIndex].Warnings); err != nil {
@@ -385,8 +389,8 @@ func run(args []string) error {
 			if err == nil && unique {
 				accumulator.Observe(message)
 				exported := make([]sqliteexport.ExportedAttachment, 0)
-				if *attachmentsDir != "" {
-					detailed, exportErr := mbox.ExportAttachmentsDetailed(*attachmentsDir, message)
+				if payloadRegistry != nil {
+					detailed, exportErr := payloadRegistry.ExportPayloads(message)
 					if exportErr != nil {
 						dedupeErr = exportErr
 						return

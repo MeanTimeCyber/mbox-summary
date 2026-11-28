@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS attachments (
  extension TEXT,
  size_bytes INTEGER NOT NULL,
  sha256 TEXT,
+ payload_sha256 TEXT,
  export_path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_extension ON attachments(extension);
@@ -275,6 +276,9 @@ CREATE TABLE IF NOT EXISTS attachment_type_rankings (
 	if err := store.ensureEmailAttachmentColumn(); err != nil {
 		return err
 	}
+	if err := store.ensureAttachmentPayloadColumn(); err != nil {
+		return err
+	}
 	var version string
 	if err := store.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 		return err
@@ -291,7 +295,6 @@ func (store *Store) ensureEmailAttachmentColumn() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	found := false
 	for rows.Next() {
 		var cid int
@@ -307,12 +310,51 @@ func (store *Store) ensureEmailAttachmentColumn() error {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return err
 	}
+	rows.Close()
 	if found {
 		return nil
 	}
 	_, err = store.db.Exec("ALTER TABLE emails ADD COLUMN has_attachment INTEGER NOT NULL DEFAULT 0")
+	return err
+}
+
+// ensureAttachmentPayloadColumn migrates attachment SHA-256 metadata.
+func (store *Store) ensureAttachmentPayloadColumn() error {
+	rows, err := store.db.Query("PRAGMA table_info(attachments)")
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue interface{}
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "payload_sha256" {
+			found = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if found {
+		_, err := store.db.Exec("CREATE INDEX IF NOT EXISTS idx_attachments_payload_sha ON attachments(payload_sha256)")
+		return err
+	}
+	_, err = store.db.Exec("ALTER TABLE attachments ADD COLUMN payload_sha256 TEXT")
+	if err != nil {
+		return err
+	}
+	_, err = store.db.Exec("CREATE INDEX IF NOT EXISTS idx_attachments_payload_sha ON attachments(payload_sha256)")
 	return err
 }
 
@@ -365,12 +407,13 @@ ON CONFLICT(email_id,thread_id,run_id) DO NOTHING`)
 		return err
 	}
 	store.attachmentStmt, err = store.db.Prepare(`
-INSERT INTO attachments(attachment_id,email_id,filename,content_type,extension,size_bytes,sha256,export_path)
-VALUES(?,?,?,?,?,?,?,?)
+INSERT INTO attachments(attachment_id,email_id,filename,content_type,extension,size_bytes,sha256,payload_sha256,export_path)
+VALUES(?,?,?,?,?,?,?,?,?)
 ON CONFLICT(attachment_id) DO UPDATE SET
  filename=excluded.filename, content_type=excluded.content_type,
  extension=excluded.extension, size_bytes=excluded.size_bytes,
- sha256=excluded.sha256, export_path=excluded.export_path`)
+ sha256=excluded.sha256, payload_sha256=excluded.payload_sha256,
+ export_path=excluded.export_path`)
 	return err
 }
 
@@ -581,6 +624,9 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 	if err := store.beginBatch(); err != nil {
 		return err
 	}
+	if _, err := store.tx.Exec("DELETE FROM attachments WHERE email_id=?", emailKey); err != nil {
+		return err
+	}
 	dateUTC := ""
 	if message.DateValid {
 		dateUTC = message.Date.UTC().Format(time.RFC3339)
@@ -624,7 +670,7 @@ func (store *Store) UpsertEmail(source mbox.SourceFile, message mbox.Message,
 		if _, err := store.tx.Stmt(store.attachmentStmt).Exec(
 			attachmentID, emailKey, attachment.Name, attachment.ContentType,
 			strings.TrimPrefix(strings.ToLower(filepath.Ext(attachment.Name)), "."),
-			attachment.Size, attachmentSHA, attachment.ExportPath); err != nil {
+			attachment.Size, attachmentSHA, attachment.PayloadSHA, attachment.ExportPath); err != nil {
 			return err
 		}
 	}

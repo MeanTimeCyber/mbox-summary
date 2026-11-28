@@ -144,6 +144,50 @@ func TestDiscoverSingleExtensionlessMailbox(t *testing.T) {
 	}
 }
 
+// TestPayloadExportRegistryDeduplicatesPayloads verifies identical payload bytes export once.
+func TestPayloadExportRegistryDeduplicatesPayloads(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "attachments")
+	registry := mbox.NewPayloadExportRegistry(directory)
+	first := mbox.Message{
+		DateValid: true,
+		Date:      time.Date(2025, 11, 24, 10, 0, 0, 0, time.UTC),
+		MessageID: "<first@example.com>",
+		Attachments: []mbox.Attachment{
+			{Name: "signature.png", ContentType: "image/png", Size: 5, Data: []byte("same")},
+		},
+	}
+	second := mbox.Message{
+		DateValid: true,
+		Date:      time.Date(2025, 11, 25, 10, 0, 0, 0, time.UTC),
+		MessageID: "<second@example.com>",
+		Attachments: []mbox.Attachment{
+			{Name: "logo.png", ContentType: "image/png", Size: 5, Data: []byte("same")},
+		},
+	}
+
+	firstExport, err := registry.ExportPayloads(first)
+	if err != nil {
+		t.Fatalf("first ExportPayloads() error = %v", err)
+	}
+	secondExport, err := registry.ExportPayloads(second)
+	if err != nil {
+		t.Fatalf("second ExportPayloads() error = %v", err)
+	}
+	if firstExport[0].ExportPath != secondExport[0].ExportPath {
+		t.Errorf("duplicate payload paths = %q / %q, want equal", firstExport[0].ExportPath, secondExport[0].ExportPath)
+	}
+	if firstExport[0].PayloadSHA != secondExport[0].PayloadSHA {
+		t.Errorf("duplicate payload hashes = %q / %q, want equal", firstExport[0].PayloadSHA, secondExport[0].PayloadSHA)
+	}
+	files, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Errorf("exported file count = %d, want 1", len(files))
+	}
+}
+
 // TestDedupeIndexMessageIDAndFallback verifies exact and fallback disk-backed keys.
 func TestDedupeIndexMessageIDAndFallback(t *testing.T) {
 	index, err := mbox.OpenDedupeIndex()

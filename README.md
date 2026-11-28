@@ -175,6 +175,21 @@ JOIN emails e ON e.email_id = a.email_id
 WHERE a.export_path IS NOT NULL;
 ```
 
+Find payloads repeated across multiple emails:
+
+```sql
+SELECT payload_sha256,
+       count(*) AS email_occurrence_count,
+       count(DISTINCT email_id) AS email_count,
+       sum(size_bytes) AS total_declared_bytes,
+       min(export_path) AS exported_path
+FROM attachments
+WHERE payload_sha256 IS NOT NULL
+GROUP BY payload_sha256
+HAVING count(*) > 1
+ORDER BY email_occurrence_count DESC;
+```
+
 List recent runs and source files:
 
 ```sql
