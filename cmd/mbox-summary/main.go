@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -60,6 +61,70 @@ func (f *folderFlags) Set(value string) error {
 	}
 	(*f)[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	return nil
+}
+
+// progressTracker renders one monotonic overall process percentage across
+// parsing, analysis, and output phases.
+type progressTracker struct {
+	enabled bool
+	last    time.Time
+}
+
+// overallPercent combines a phase base and bytes completed within that phase.
+func overallPercent(phaseStart float64, completedBytes, totalBytes int64) float64 {
+	if totalBytes <= 0 {
+		return float64(phaseStart)
+	}
+	phaseCompleted := float64(completedBytes) * 100 / float64(totalBytes)
+	if phaseCompleted > 100 {
+		phaseCompleted = 100
+	}
+	overall := float64(phaseStart) + 45*phaseCompleted/100
+	if overall > 100 {
+		overall = 100
+	}
+	return overall
+}
+
+// renderFile updates a current pass and file percentage.
+func (tracker *progressTracker) renderFile(phase string, phaseStart float64, fileIndex, fileCount int,
+	fileName string, fileBytesRead, fileSize, completedBytes, totalBytes, messageCount, warningCount int64, force bool) {
+	if !tracker.enabled {
+		return
+	}
+	now := time.Now()
+	if !force && tracker.last.IsZero() == false && now.Sub(tracker.last) < 250*time.Millisecond {
+		return
+	}
+	tracker.last = now
+	filePercent := 0.0
+	if fileSize > 0 {
+		filePercent = float64(fileBytesRead) * 100 / float64(fileSize)
+		if filePercent > 100 {
+			filePercent = 100
+		}
+	}
+	overall := overallPercent(phaseStart, completedBytes, totalBytes)
+	fmt.Fprintf(os.Stderr, "\r[%s] file %d/%d %s %0.1f%% | overall %0.1f%% | %d messages | %d warnings",
+		phase, fileIndex, fileCount, filepath.Base(fileName), filePercent, overall,
+		messageCount, warningCount)
+}
+
+// renderPhase prints a stable overall percentage at a completed phase.
+func (tracker *progressTracker) renderPhase(label string, overall float64) {
+	if !tracker.enabled {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r[%s] overall %0.1f%%", label, overall)
+	tracker.last = time.Now()
+}
+
+// finish prints the final progress line.
+func (tracker *progressTracker) finish() {
+	if !tracker.enabled {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "\r[Complete] overall 100.0%")
 }
 
 // main is the command entry point. It exits non-zero after writing CLI errors to stderr.
@@ -147,32 +212,30 @@ func run(args []string) error {
 		defer cancel()
 	}
 
-	var lastProgress time.Time
-	progressOptions := func() mbox.ParseOptions {
+	tracker := progressTracker{enabled: *showProgress}
+	progressOptions := func(source mbox.SourceFile, fileIndex int, phase string, phaseStart float64, completedBytes int64) mbox.ParseOptions {
 		return mbox.ParseOptions{
 			Context:    parseContext,
-			TotalBytes: totalBytes,
+			TotalBytes: source.Size,
 			Workers:    *workers,
 			Progress: func(p mbox.ParseProgress) {
 				if !*showProgress {
 					return
 				}
-				now := time.Now()
-				if p.MessageIndex > 0 && now.Sub(lastProgress) < 250*time.Millisecond {
-					return
-				}
-				lastProgress = now
-				if p.TotalBytes > 0 {
-					percent := float64(p.BytesRead) * 100 / float64(p.TotalBytes)
-					if percent > 100 {
-						percent = 100
-					}
-					fmt.Fprintf(os.Stderr, "\rparsing: %.1f%%, %d messages, %d warnings",
-						percent, p.MessageCount, p.WarningCount)
-					return
-				}
-				fmt.Fprintf(os.Stderr, "\rparsing: %d messages, %d warnings",
-					p.MessageCount, p.WarningCount)
+				tracker.renderFile(
+					phase,
+					phaseStart,
+					fileIndex+1,
+					len(sources),
+					source.Path,
+					p.BytesRead,
+					source.Size,
+					completedBytes+p.BytesRead,
+					totalBytes,
+					int64(p.MessageCount),
+					int64(p.WarningCount),
+					false,
+				)
 			},
 		}
 	}
@@ -180,14 +243,13 @@ func run(args []string) error {
 	analyzer := mbox.NewIdentityAnalyzer()
 	sourceCoverage := make([]model.SourceCoverage, 0, len(sources))
 	allFirstWarnings := make([]model.ParseWarning, 0)
-	byteOffset := int64(0)
-	for _, source := range sources {
+	completedBytes := int64(0)
+	for sourceIndex, source := range sources {
 		firstPassFile, err := os.Open(source.Path)
 		if err != nil {
 			return fmt.Errorf("open input %s: %w", source.Path, err)
 		}
-		firstOptions := progressOptions()
-		firstOptions.ByteOffset = byteOffset
+		firstOptions := progressOptions(source, sourceIndex, "Identity pass", 0, completedBytes)
 		firstOptions.DiscardMessages = true
 		firstOptions.SourceFolder = source.Folder
 		firstOptions.SourceFile = source.Path
@@ -197,6 +259,11 @@ func run(args []string) error {
 		if err == nil && closeErr != nil {
 			err = fmt.Errorf("close input %s: %w", source.Path, closeErr)
 		}
+		if err == nil {
+			tracker.renderFile("Identity pass", 0, sourceIndex+1, len(sources), source.Path,
+				source.Size, source.Size, completedBytes+source.Size, totalBytes,
+				int64(firstResult.ParsedCount), int64(len(firstResult.Warnings)), true)
+		}
 		sourceCoverage = append(sourceCoverage, model.SourceCoverage{
 			Path:     source.Path,
 			Folder:   string(source.Folder),
@@ -204,9 +271,6 @@ func run(args []string) error {
 			Warnings: len(firstResult.Warnings),
 		})
 		allFirstWarnings = append(allFirstWarnings, firstResult.Warnings...)
-		if *showProgress {
-			fmt.Fprintln(os.Stderr)
-		}
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("mailbox parsing timed out after %s", *timeout)
@@ -216,8 +280,10 @@ func run(args []string) error {
 			}
 			return fmt.Errorf("parse mailbox %s: %w", source.Path, err)
 		}
-		byteOffset += source.Size
+		completedBytes += source.Size
 	}
+	tracker.renderPhase("Identity pass complete", 45)
+	fmt.Fprintln(os.Stderr)
 	if analyzer.Count() == 0 {
 		return errors.New("input contains no parseable emails")
 	}
@@ -287,7 +353,7 @@ func run(args []string) error {
 	defer dedupe.Close()
 
 	allSecondWarnings := make([]model.ParseWarning, 0)
-	byteOffset = 0
+	completedBytes = 0
 	exportedFiles := 0
 	exportedBytes := int64(0)
 	for sourceIndex, source := range sources {
@@ -301,8 +367,7 @@ func run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("open input for aggregation %s: %w", source.Path, err)
 		}
-		secondOptions := progressOptions()
-		secondOptions.ByteOffset = byteOffset
+		secondOptions := progressOptions(source, sourceIndex, "Aggregation pass", 45, completedBytes)
 		secondOptions.DiscardMessages = true
 		secondOptions.SourceFolder = source.Folder
 		secondOptions.SourceFile = source.Path
@@ -351,13 +416,15 @@ func run(args []string) error {
 		if err == nil && closeErr != nil {
 			err = fmt.Errorf("close input %s: %w", source.Path, closeErr)
 		}
+		if err == nil {
+			tracker.renderFile("Aggregation pass", 45, sourceIndex+1, len(sources), source.Path,
+				source.Size, source.Size, completedBytes+source.Size, totalBytes,
+				int64(secondResult.ParsedCount), int64(len(secondResult.Warnings)), true)
+		}
 		sourceCoverage[sourceIndex].Duplicates = dedupe.DuplicateRecords - duplicatesBefore
 		allSecondWarnings = append(allSecondWarnings, secondResult.Warnings...)
 		if dedupeErr != nil {
 			return fmt.Errorf("update deduplication index for %s: %w", source.Path, dedupeErr)
-		}
-		if *showProgress {
-			fmt.Fprintln(os.Stderr)
 		}
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -368,8 +435,10 @@ func run(args []string) error {
 			}
 			return fmt.Errorf("parse mailbox for aggregation %s: %w", source.Path, err)
 		}
-		byteOffset += source.Size
+		completedBytes += source.Size
 	}
+	tracker.renderPhase("Aggregation pass complete", 90)
+	fmt.Fprintln(os.Stderr)
 
 	summary := accumulator.Summary()
 	summary.ParseWarnings = append(allFirstWarnings, allSecondWarnings...)
@@ -385,12 +454,15 @@ func run(args []string) error {
 	summary.Attachments.ExportedBytes = exportedBytes
 
 	if sqliteStore != nil {
+		tracker.renderPhase("Writing SQLite database", 92)
 		if err := sqliteStore.StoreSummary(summary); err != nil {
 			sqliteStore.FailRun()
 			return fmt.Errorf("store SQLite aggregates: %w", err)
 		}
+		tracker.renderPhase("SQLite database complete", 95)
 	}
 
+	tracker.renderPhase("Writing HTML report", 95)
 	if err := report.WriteFile(*output, summary); err != nil {
 		return fmt.Errorf("write HTML report: %w", err)
 	}
@@ -400,6 +472,7 @@ func run(args []string) error {
 		}
 		sqliteCompleted = true
 	}
+	tracker.finish()
 
 	fmt.Fprintf(os.Stdout, "wrote %s (%d messages)\n", *output, summary.MessageCount)
 	return nil

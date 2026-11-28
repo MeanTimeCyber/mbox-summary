@@ -38,3 +38,20 @@ func TestIdentityFlagsRejectsEmptyValue(t *testing.T) {
 		t.Fatal("Set() error = nil, want empty identity error")
 	}
 }
+
+// TestOverallPercentIsMonotonic verifies both parsing phases stay within 0–100.
+func TestOverallPercentIsMonotonic(t *testing.T) {
+	identityStart := overallPercent(0, 0, 100)
+	identityEnd := overallPercent(0, 100, 100)
+	aggregationStart := overallPercent(45, 0, 100)
+	aggregationEnd := overallPercent(45, 100, 100)
+	if identityStart != 0 || identityEnd != 45 {
+		t.Errorf("identity phase = %v/%v, want 0/45", identityStart, identityEnd)
+	}
+	if aggregationStart != 45 || aggregationEnd != 90 {
+		t.Errorf("aggregation phase = %v/%v, want 45/90", aggregationStart, aggregationEnd)
+	}
+	if overallPercent(45, 200, 100) != 90 {
+		t.Errorf("capped aggregation percentage should be 90")
+	}
+}
