@@ -7,6 +7,8 @@
 *.sqlite
 *.wal
 *.shm
+*.db-wal
+*.db-shm
 
 # Binary file
 mbox-summary
