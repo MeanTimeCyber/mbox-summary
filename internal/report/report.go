@@ -155,8 +155,8 @@ func htmlTemplate() *template.Template {
 <details id="threads" class="report-section" open><summary>Top 20 conversation threads</summary><div class="section-body"><div id="threadTable"></div></div></details>
 <details id="attachments" class="report-section" open><summary>Sent attachments</summary><div class="section-body"><div id="attachmentTable"></div></div></details>
 <details id="sources" class="report-section" open><summary>Source folders and files</summary><div class="section-body"><div id="sourceTable"></div><div id="folderTable"></div><div id="dedupeStats"></div></div></details>
-<details id="senders" class="report-section" open><summary>Top senders</summary><div class="section-body"><div id="senderTable"></div></div></details>
-<details id="recipients" class="report-section" open><summary>Top recipients</summary><div class="section-body"><div id="recipientTable"></div></div></details>
+<details id="senders" class="report-section" open><summary>Top senders</summary><div class="section-body"><p>External addresses that most frequently sent messages to the mailbox owner. The owner’s own identity is excluded.</p><div id="senderTable"></div></div></details>
+<details id="recipients" class="report-section" open><summary>Top recipients</summary><div class="section-body"><p>External addresses that most frequently received messages sent by the mailbox owner. The owner’s own identity is excluded; mailing-list recipients are identified separately.</p><div id="recipientTable"></div></div></details>
 <details id="warnings" class="report-section" open><summary>Parse warnings</summary><div class="section-body"><div id="warnings"></div></div></details>
 </main>
 <script>

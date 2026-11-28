@@ -37,7 +37,7 @@ func TestWriteFileProducesStandaloneReport(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	html := string(data)
-	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<div id=\"weeklyChart\"", "function drawChart", "<svg", "Table of contents", "<details id=\"yearly\"", "Top 20 conversation threads", "Source folders and files", "Sent.mbox", "table-wrap", "thread-participants", "Expand all", "Collapse all"} {
+	for _, expected := range []string{"<!doctype html>", "Mailbox Summary", "2026-W47", "owner@example.com", "sender@example.net", "<div id=\"weeklyChart\"", "function drawChart", "<svg", "Table of contents", "<details id=\"yearly\"", "Top 20 conversation threads", "Source folders and files", "Sent.mbox", "table-wrap", "thread-participants", "Expand all", "Collapse all", "External addresses that most frequently sent messages", "External addresses that most frequently received messages"} {
 		if !strings.Contains(html, expected) {
 			t.Errorf("HTML missing %q", expected)
 		}
