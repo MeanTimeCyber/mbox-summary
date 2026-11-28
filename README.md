@@ -87,6 +87,116 @@ Create or append to a metadata-only SQLite database:
 ```
 
 SQLite exports include runs, source files, email metadata, recipients, threads, attachments, and run-specific aggregates. Message bodies are never stored.
+
+### Useful SQLite queries
+
+List all regular `To` recipients:
+
+```sql
+SELECT e.message_id,
+       e.date_utc,
+       e.sender_address,
+       e.subject,
+       r.recipient_type,
+       r.address_normalized,
+       r.display_name
+FROM emails e
+JOIN email_recipients r ON r.email_id = e.email_id
+WHERE r.recipient_type = 'to';
+```
+
+List `Cc` recipients:
+
+```sql
+SELECT e.message_id, e.date_utc, e.sender_address, r.address_normalized
+FROM emails e
+JOIN email_recipients r ON r.email_id = e.email_id
+WHERE r.recipient_type = 'cc';
+```
+
+List `Bcc` recipients:
+
+```sql
+SELECT e.message_id, e.date_utc, e.sender_address, r.address_normalized
+FROM emails e
+JOIN email_recipients r ON r.email_id = e.email_id
+WHERE r.recipient_type = 'bcc';
+```
+
+List every recipient for one email:
+
+```sql
+SELECT r.recipient_type, r.address_normalized, r.display_name
+FROM email_recipients r
+WHERE r.email_id = '<EMAIL_ID>';
+```
+
+Find the most frequent sender addresses:
+
+```sql
+SELECT sender_address, count(*) AS message_count
+FROM emails
+WHERE sender_address IS NOT NULL
+GROUP BY sender_address
+ORDER BY message_count DESC;
+```
+
+Find the most frequent recipient addresses:
+
+```sql
+SELECT r.address_normalized,
+       r.recipient_type,
+       count(*) AS message_count
+FROM email_recipients r
+GROUP BY r.address_normalized, r.recipient_type
+ORDER BY message_count DESC;
+```
+
+List emails that contain attachments:
+
+```sql
+SELECT message_id, date_utc, sender_address, subject
+FROM emails
+WHERE has_attachment = 1
+ORDER BY date_utc DESC;
+```
+
+List exported attachment files and payload hashes:
+
+```sql
+SELECT e.message_id,
+       a.filename,
+       a.content_type,
+       a.size_bytes,
+       a.export_path,
+       a.sha256
+FROM attachments a
+JOIN emails e ON e.email_id = a.email_id
+WHERE a.export_path IS NOT NULL;
+```
+
+List recent runs and source files:
+
+```sql
+SELECT r.run_id, r.started_at, r.status, r.cutoff
+FROM runs r
+ORDER BY r.started_at DESC;
+
+SELECT source_id, path, folder, size_bytes, message_count, warning_count
+FROM source_files
+ORDER BY path;
+```
+
+Show thread membership:
+
+```sql
+SELECT t.thread_id, t.subject, t.first_seen, t.last_seen,
+       e.message_id, e.subject AS email_subject
+FROM threads t
+JOIN email_threads et ON et.thread_id = t.thread_id
+JOIN emails e ON e.email_id = et.email_id;
+```
+
 | `--folder` | Inferred | Folder mapping in `Folder=path` form; repeat for multiple exports |
 
 ## Directory exports
