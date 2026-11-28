@@ -135,6 +135,15 @@ func (a *Accumulator) Observe(message mbox.Message) {
 	}
 
 	weeklyStart := weekStart(a.cutoff).AddDate(0, 0, -103*7)
+	// Annual summaries cover every calendar year represented in the export,
+	// including recent years that also contribute to weekly buckets.
+	yearlyEntry := periodEntry(a.yearlyMap, date.Format("2006"))
+	if sent {
+		yearlyEntry.Sent++
+	}
+	if received {
+		yearlyEntry.Received++
+	}
 	if !date.Before(weeklyStart) {
 		period := isoWeekKey(date)
 		entry := periodEntry(a.weeklyMap, period)

@@ -38,8 +38,12 @@ func TestSummarizeClassifiesSentReceivedAndHistoricalData(t *testing.T) {
 	if len(summary.Weekly) != 104 {
 		t.Errorf("weekly bucket count = %d, want 104", len(summary.Weekly))
 	}
-	if len(summary.Yearly) != 1 || summary.Yearly[0].Period != "2020" {
-		t.Errorf("yearly buckets = %#v, want 2020", summary.Yearly)
+	yearPeriods := make(map[string]bool)
+	for _, period := range summary.Yearly {
+		yearPeriods[period.Period] = true
+	}
+	if !yearPeriods["2020"] || !yearPeriods["2026"] {
+		t.Errorf("yearly buckets = %#v, want 2020 and 2026", summary.Yearly)
 	}
 
 	sentFound := false
@@ -53,6 +57,33 @@ func TestSummarizeClassifiesSentReceivedAndHistoricalData(t *testing.T) {
 	}
 	if len(summary.TopRecipients) == 0 {
 		t.Error("top recipient ranking is empty")
+	}
+}
+
+// TestSummarizeIncludesRecentCalendarYears verifies yearly and weekly charts cover the same latest data range.
+func TestSummarizeIncludesRecentCalendarYears(t *testing.T) {
+	cutoff := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	messages := []mbox.Message{
+		{
+			Date: time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
+			From: mbox.Address{Address: "owner@example.com"},
+		},
+		{
+			Date: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+			From: mbox.Address{Address: "owner@example.com"},
+		},
+	}
+
+	summary := stats.Summarize(messages, []string{"owner@example.com"}, cutoff, 50)
+	years := make(map[string]bool)
+	for _, period := range summary.Yearly {
+		years[period.Period] = true
+	}
+	if !years["2025"] || !years["2026"] {
+		t.Errorf("yearly periods = %#v, want 2025 and 2026", summary.Yearly)
+	}
+	if len(summary.Weekly) != 104 {
+		t.Errorf("weekly bucket count = %d, want 104", len(summary.Weekly))
 	}
 }
 
